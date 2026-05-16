@@ -37,8 +37,8 @@ def load_font(size: int) -> Union[ImageFont.FreeTypeFont, ImageFont.ImageFont]:
     candidates = [
         # "./fonts/IRANYekanRegular.ttf",
         # "./fonts/IRANYekanBold.ttf",
-        # "./fonts/IRANYekanExtraBold.ttf",
-        "./fonts/IRANYekanExtraBlack.ttf"
+        "./fonts/IRANYekanExtraBold.ttf",
+        # "./fonts/IRANYekanExtraBlack.ttf"
     ]
     for path in candidates:
         try:
