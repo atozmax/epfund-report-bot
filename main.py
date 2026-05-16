@@ -144,11 +144,11 @@ def main() -> None:
     scheduler = BlockingScheduler()
     scheduler.add_job(
         run_report,
-        trigger=CronTrigger(minute="0,10,20,30,40,50"),
+        trigger=CronTrigger(minute="0"),
         id="treasury_report",
         name="Send treasury report",
     )
-    print("Scheduler running — reports at :00, :10, :20, :30, :40, :50 each hour")
+    print("Scheduler running — reports at :00 each hour")
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):
