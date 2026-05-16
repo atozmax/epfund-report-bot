@@ -28,17 +28,17 @@ INPUT_IMAGE = "input.png"
 
 # Center of each value area (fractions of image width/height)
 VALUE_BOXES = [
-    (0.05, 0.40, 0.55, 0.62),  # Insurance Reserve Capital (no risk)
-    (0.02, 0.54, 0.34, 0.80),  # At Risk
-    (0.08, 0.68, 0.42, 1.03),  # Profit Ratio
+    (0, 0.40, 0.55, 0.62),  # Insurance Reserve Capital (no risk)
+    (0, 0.54, 0.34, 0.80),  # At Risk
+    (0, 0.68, 0.42, 1.03),  # Profit Ratio
 ]
 
 def load_font(size: int) -> Union[ImageFont.FreeTypeFont, ImageFont.ImageFont]:
     candidates = [
         # "./fonts/IRANYekanRegular.ttf",
         # "./fonts/IRANYekanBold.ttf",
-        "./fonts/IRANYekanExtraBold.ttf",
-        # "./fonts/IRANYekanExtraBlack.ttf"
+        # "./fonts/IRANYekanExtraBold.ttf",
+        "./fonts/IRANYekanExtraBlack.ttf"
     ]
     for path in candidates:
         try:
@@ -113,7 +113,7 @@ def build_report_image(result: dict) -> bytes:
 
     image = Image.open(INPUT_IMAGE).convert("RGB")
     draw = ImageDraw.Draw(image)
-    font_size = 56
+    font_size = 96
     # max(28, image.width // 22)
     font = load_font(font_size)
 
@@ -140,6 +140,7 @@ def run_report() -> None:
 
 
 def main() -> None:
+    run_report()
     scheduler = BlockingScheduler()
     scheduler.add_job(
         run_report,
