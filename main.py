@@ -73,9 +73,9 @@ def format_amount(value: Decimal) -> str:
 
 
 def format_profit_ratio(reserve: Decimal, at_risk: Decimal) -> str:
-    if at_risk == 0:
-        return "No Risk"
-    ratio = reserve / at_risk
+    if reserve == 0:
+        return "N/A"
+    ratio =  at_risk / reserve
     return f"{ratio:,.2f}"
 
 
