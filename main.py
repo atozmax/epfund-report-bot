@@ -24,7 +24,7 @@ if not CHAT_IDS:
     raise ValueError("CHAT_ID_1 is not set")
     
 TREASURY_API = "https://api.epfund.org/v1/landing/home/treasury-info"
-INPUT_IMAGE = "input.jpg"
+INPUT_IMAGE = "input.png"
 
 # Center of each value area (fractions of image width/height)
 VALUE_BOXES = [
