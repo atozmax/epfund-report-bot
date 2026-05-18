@@ -22,15 +22,18 @@ CHAT_IDS = [int(os.environ.get("CHAT_ID_1"))]
 
 if not CHAT_IDS:
     raise ValueError("CHAT_ID_1 is not set")
-    
+
 TREASURY_API = "https://api.epfund.org/v1/landing/home/treasury-info"
 INPUT_IMAGE = "input.png"
 
-# Center of each value area (fractions of image width/height)
+# Left inset for all value text, as a fraction of image width (0.0 = image edge, 0.10 = 10% in)
+VALUE_LEFT_MARGIN = 0.15
+
+# Vertical bounds per value, as fractions of image height: (top, bottom)
 VALUE_BOXES = [
-    (0, 0.40, 0.55, 0.62),  # Insurance Reserve Capital (no risk)
-    (0, 0.54, 0.34, 0.80),  # At Risk
-    (0, 0.68, 0.42, 1.03),  # Profit Ratio
+    (0.40, 0.62),  # Insurance Reserve Capital
+    (0.54, 0.84),  # At Risk
+    (0.68, 1.06),  # Profit Ratio
 ]
 
 def load_font(size: int) -> Union[ImageFont.FreeTypeFont, ImageFont.ImageFont]:
@@ -76,26 +79,24 @@ def format_profit_ratio(reserve: Decimal, at_risk: Decimal) -> str:
     if reserve == 0:
         return "N/A"
     ratio =  at_risk / reserve
-    return f"{ratio:,.2f}"
+
+    return f"{ratio:,.4f}"
 
 
-def draw_centered_text(
+def draw_box_text(
     draw: ImageDraw.ImageDraw,
     text: str,
-    box: tuple[float, float, float, float],
+    box: tuple[float, float],
     font: Union[ImageFont.FreeTypeFont, ImageFont.ImageFont],
     fill: str = "#2d2d2d",
 ) -> None:
     width, height = draw.im.size
-    x0 = int(box[0] * width)
-    y0 = int(box[1] * height)
-    x1 = int(box[2] * width)
-    y1 = int(box[3] * height)
+    x = int(VALUE_LEFT_MARGIN * width)
+    y0 = int(box[0] * height)
+    y1 = int(box[1] * height)
 
     bbox = draw.textbbox((0, 0), text, font=font)
-    text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
-    x = x0 + (x1 - x0 - text_width) / 2
     y = y0 + (y1 - y0 - text_height) / 2 - bbox[1]
     draw.text((x, y), text, font=font, fill=fill)
 
@@ -118,7 +119,7 @@ def build_report_image(result: dict) -> bytes:
     font = load_font(font_size)
 
     for value, box in zip(values, VALUE_BOXES):
-        draw_centered_text(draw, value, box, font)
+        draw_box_text(draw, value, box, font)
 
     buffer = BytesIO()
     image.save(buffer, format="JPEG", quality=95)

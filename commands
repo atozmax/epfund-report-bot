@@ -1,2 +1,2 @@
-docker build -t epfund-report-bot5 .
-docker run -d --name epfund-report-bot5 --network epfund-stage --restart always epfund-report-bot5
+docker build -t epfund-report-bot6 .
+docker run -d --name epfund-report-bot6 --network epfund-stage --restart always epfund-report-bot6
