@@ -21,6 +21,7 @@ FONTS_DIR = ROOT_DIR / "fonts"
 FAILED_IMAGE = ROOT_DIR / "images" / "failed.png"
 PHASE1_IMAGE = ROOT_DIR / "images" / "phase1.jpg"
 PHASE2_IMAGE = ROOT_DIR / "images" / "phase2.jpg"
+WITHDRAW_IMAGE = ROOT_DIR / "images" / "withdraw.png"
 DATABASE_DIR = ROOT_DIR / "database"
 
 REGULAR_FONT_PATHS = [
@@ -59,6 +60,7 @@ app = Flask(__name__)
 
 FAILED_REQUIRED_FIELDS = ("username", "login", "reason", "final_equity")
 PHASE_PASS_REQUIRED_FIELDS = ("username", "login", "initial_balance", "total_profit")
+WITHDRAW_REQUIRED_FIELDS = ("username", "login", "withdraw_amount", "total_withdraw")
 
 TRADER_CAPTION_URL = "https://epfund.org/en/wallet?tab=traders&trader={login}&status=inactive"
 
@@ -101,6 +103,14 @@ def build_phase2_telegram_caption(login: str) -> str:
     return (
         f"✅ 🏆 *Phase 2 passed* — account is now funded on Phase Real!\n\n"
         f"Congratulations on completing the evaluation program.\n\n"
+        f"👇 {link}"
+    )
+
+
+def build_withdraw_telegram_caption(login: str) -> str:
+    link = build_dashboard_link_markdown(login)
+    return (
+        f"💸 *Withdrawal processed* for this account.\n\n"
         f"👇 {link}"
     )
 
@@ -297,6 +307,11 @@ async def send_image_to_chats(
         )
 
 
+def _field_missing(item: dict[str, Any], field: str) -> bool:
+    value = item.get(field)
+    return value is None or value == ""
+
+
 def _validate_report_item(
     item: Any,
     index: int,
@@ -304,10 +319,20 @@ def _validate_report_item(
 ) -> Optional[str]:
     if not isinstance(item, dict):
         return f"Item {index} must be an object"
-    missing = [f for f in required_fields if not item.get(f)]
+    missing = [f for f in required_fields if _field_missing(item, f)]
     if missing:
         return f"Item {index} missing fields: {', '.join(missing)}"
     return None
+
+
+def _format_report_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return str(int(value)) if value.is_integer() else str(value)
+    return str(value)
 
 
 def _normalize_pass_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -316,6 +341,15 @@ def _normalize_pass_item(item: dict[str, Any]) -> dict[str, Any]:
         "login": item.get("login"),
         "initial_balance": item.get("initial_balance") or item.get("initialBalance"),
         "total_profit": item.get("total_profit") or item.get("totalProfit"),
+    }
+
+
+def _normalize_withdraw_item(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "username": item.get("username"),
+        "login": item.get("login"),
+        "withdraw_amount": item.get("withdraw_amount") if item.get("withdraw_amount") is not None else item.get("withdrawAmount"),
+        "total_withdraw": item.get("total_withdraw") if item.get("total_withdraw") is not None else item.get("totalWithdraw"),
     }
 
 
@@ -420,6 +454,51 @@ def send_phase2_reports(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return asyncio.run(send_phase2_reports_batch(items))
 
 
+async def send_withdraw_reports_batch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    bot_token, chat_ids = _telegram_config()
+    bot = Bot(token=bot_token)
+    results: list[dict[str, Any]] = []
+
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            results.append({"index": index, "ok": False, "error": f"Item {index} must be an object"})
+            continue
+        normalized = _normalize_withdraw_item(item)
+        error = _validate_report_item(normalized, index, WITHDRAW_REQUIRED_FIELDS)
+        if error:
+            results.append({"index": index, "ok": False, "error": error})
+            continue
+
+        try:
+            login = str(normalized["login"])
+            image_bytes = build_pass_image(
+                WITHDRAW_IMAGE,
+                username=str(normalized["username"]),
+                login=login,
+                initial_balance=_format_report_value(normalized["withdraw_amount"]),
+                total_profit=_format_report_value(normalized["total_withdraw"]),
+            )
+            caption = build_withdraw_telegram_caption(login)
+            await send_image_to_chats(image_bytes, caption=caption, bot=bot)
+            results.append(
+                {
+                    "index": index,
+                    "ok": True,
+                    "username": str(normalized["username"]),
+                    "login": login,
+                    "caption": caption,
+                }
+            )
+        except Exception as exc:
+            results.append({"index": index, "ok": False, "error": str(exc)})
+
+    return results
+
+
+def send_withdraw_reports(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return asyncio.run(send_withdraw_reports_batch(items))
+
+
 def save_failed_report_preview(payload: dict[str, Any]) -> dict[str, str]:
     """
     Build the failed-report image from a JSON-like dict and save it locally.
@@ -515,6 +594,89 @@ def save_phase2_report_preview(payload: dict[str, Any]) -> dict[str, str]:
     Saves to database/phase2-<random_id>.jpg and returns metadata.
     """
     return save_pass_report_preview(payload, PHASE2_IMAGE, "phase2")
+
+
+def save_withdraw_report_preview(payload: dict[str, Any]) -> dict[str, str]:
+    """
+    Build the withdraw report image from a JSON-like dict and save it locally.
+
+    Example payload:
+        {
+            "username": "pips_shark",
+            "login": "12387427863",
+            "withdraw_amount": 5000,
+            "total_withdraw": 15000
+        }
+
+    Saves to database/withdraw-<random_id>.jpg and returns metadata.
+    """
+    normalized = _normalize_withdraw_item(payload)
+    missing = [f for f in WITHDRAW_REQUIRED_FIELDS if _field_missing(normalized, f)]
+    if missing:
+        raise ValueError(f"Missing fields: {', '.join(missing)}")
+
+    login = str(normalized["login"])
+    image_bytes = build_pass_image(
+        WITHDRAW_IMAGE,
+        username=str(normalized["username"]),
+        login=login,
+        initial_balance=_format_report_value(normalized["withdraw_amount"]),
+        total_profit=_format_report_value(normalized["total_withdraw"]),
+    )
+
+    DATABASE_DIR.mkdir(parents=True, exist_ok=True)
+    file_id = uuid.uuid4().hex[:12]
+    filename = f"withdraw-{file_id}.jpg"
+    filepath = DATABASE_DIR / filename
+    filepath.write_bytes(image_bytes)
+
+    return {
+        "id": file_id,
+        "filename": filename,
+        "path": str(filepath),
+    }
+
+
+@app.post("/withdraw-report")
+@require_api_token
+def withdraw_report():
+    items = request.get_json(silent=True)
+    if not isinstance(items, list):
+        return jsonify({"ok": False, "error": "Request body must be a JSON array"}), 400
+    if not items:
+        return jsonify({"ok": False, "error": "Request body must not be empty"}), 400
+
+    try:
+        results = send_withdraw_reports(items)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    sent = sum(1 for r in results if r.get("ok"))
+    failed = len(results) - sent
+    return jsonify(
+        {
+            "ok": failed == 0,
+            "sent": sent,
+            "failed": failed,
+            "total": len(results),
+            "results": results,
+        }
+    )
+
+
+@app.post("/withdraw-report/preview")
+@require_api_token
+def withdraw_report_preview():
+    """Generate withdraw image and save to database/ without sending to Telegram."""
+    data = request.get_json(silent=True) or {}
+    try:
+        result = save_withdraw_report_preview(data)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    return jsonify({"ok": True, **result})
 
 
 @app.post("/failed-report")
@@ -677,6 +839,15 @@ if __name__ == "__main__":
             "total_profit": "12500",
         }
         result = save_phase2_report_preview(sample)
+        print(result["path"])
+
+        sample = {
+            "username": "pips_shark",
+            "login": "12387427863",
+            "withdraw_amount": 5000,
+            "total_withdraw": 15000,
+        }
+        result = save_withdraw_report_preview(sample)
         print(result["path"])
 
     else:
