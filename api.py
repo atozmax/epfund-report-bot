@@ -2,13 +2,14 @@ import asyncio
 import os
 import uuid
 from datetime import datetime
+from functools import wraps
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Callable, Optional, Union
 
 import qrcode
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Bot
 
@@ -51,6 +52,29 @@ FINAL_EQUITY_BOX = (LEFT_TEXT_X+ 0.1, 0.42, 0.78, 0.52)
 REASON_BOX = (LEFT_TEXT_X+ 0.1, 0.6, 0.78, 0.68)
 
 app = Flask(__name__)
+
+REQUIRED_FIELDS = ("username", "login", "reason", "link", "final_equity")
+
+
+def require_api_token(view: Callable[..., Response]) -> Callable[..., Response]:
+    @wraps(view)
+    def wrapped(*args: Any, **kwargs: Any) -> Response:
+        expected = os.environ.get("API_TOKEN")
+        if not expected:
+            return jsonify({"ok": False, "error": "API_TOKEN is not configured"}), 500
+
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            provided = auth_header[7:].strip()
+        else:
+            provided = request.headers.get("X-API-Token", "").strip()
+
+        if not provided or provided != expected:
+            return jsonify({"ok": False, "error": "Unauthorized"}), 401
+
+        return view(*args, **kwargs)
+
+    return wrapped
 
 
 def _load_font(
@@ -142,7 +166,7 @@ def build_failed_image(
     draw = ImageDraw.Draw(image)
     width, height = image.size
     body_font = load_regular_font(BODY_FONT_SIZE)
-    date_font = load_regular_font(DATE_FONT_SIZE)
+    # date_font = load_regular_font(DATE_FONT_SIZE)
 
     today_text = format_datetime_now()
     qr_size = int(width * QR_SIZE_RATIO)
@@ -150,11 +174,11 @@ def build_failed_image(
     qr_x = right_edge - qr_size
     qr_y = int(QR_TOP_Y * height)
 
-    date_bbox = draw.textbbox((0, 0), today_text, font=date_font)
-    date_width = date_bbox[2] - date_bbox[0]
-    date_x = right_edge - date_width + 50
-    date_y = int(DATE_TOP_Y * height)
-    draw.text((date_x - 140, date_y - date_bbox[1] + 100), today_text, font=date_font, fill=DATE_FILL)
+    # date_bbox = draw.textbbox((0, 0), today_text, font=date_font)
+    # date_width = date_bbox[2] - date_bbox[0]
+    # date_x = right_edge - date_width + 50
+    # date_y = int(DATE_TOP_Y * height)
+    # draw.text((date_x - 140, date_y - date_bbox[1] + 100), today_text, font=date_font, fill=DATE_FILL)
 
     qr_img = make_qr_image(link, qr_size)
     image.paste(qr_img, (qr_x - 105, qr_y + 90))
@@ -180,11 +204,58 @@ def _telegram_config() -> tuple[str, list[int]]:
     return bot_token, [int(chat_id)]
 
 
-async def send_image_to_chats(image_bytes: bytes) -> None:
+async def send_image_to_chats(image_bytes: bytes, bot: Optional[Bot] = None) -> None:
+    bot_token, chat_ids = _telegram_config()
+    telegram_bot = bot or Bot(token=bot_token)
+    for chat_id in chat_ids:
+        await telegram_bot.send_photo(chat_id=chat_id, photo=image_bytes)
+
+
+def _validate_report_item(item: Any, index: int) -> Optional[str]:
+    if not isinstance(item, dict):
+        return f"Item {index} must be an object"
+    missing = [f for f in REQUIRED_FIELDS if not item.get(f)]
+    if missing:
+        return f"Item {index} missing fields: {', '.join(missing)}"
+    return None
+
+
+async def send_failed_reports_batch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     bot_token, chat_ids = _telegram_config()
     bot = Bot(token=bot_token)
-    for chat_id in chat_ids:
-        await bot.send_photo(chat_id=chat_id, photo=image_bytes)
+    results: list[dict[str, Any]] = []
+
+    for index, item in enumerate(items):
+        error = _validate_report_item(item, index)
+        if error:
+            results.append({"index": index, "ok": False, "error": error})
+            continue
+
+        try:
+            image_bytes = build_failed_image(
+                username=str(item["username"]),
+                login=str(item["login"]),
+                reason=str(item["reason"]),
+                link=str(item["link"]),
+                final_equity=str(item["final_equity"]),
+            )
+            await send_image_to_chats(image_bytes, bot=bot)
+            results.append(
+                {
+                    "index": index,
+                    "ok": True,
+                    "username": str(item["username"]),
+                    "login": str(item["login"]),
+                }
+            )
+        except Exception as exc:
+            results.append({"index": index, "ok": False, "error": str(exc)})
+
+    return results
+
+
+def send_failed_reports(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return asyncio.run(send_failed_reports_batch(items))
 
 
 def save_failed_report_preview(payload: dict[str, Any]) -> dict[str, str]:
@@ -227,42 +298,35 @@ def save_failed_report_preview(payload: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def send_failed_report(
-    username: str,
-    login: str,
-    reason: str,
-    link: str,
-    final_equity: str,
-) -> None:
-    image_bytes = build_failed_image(username, login, reason, link, final_equity)
-    asyncio.run(send_image_to_chats(image_bytes))
-
-
-REQUIRED_FIELDS = ("username", "login", "reason", "link", "final_equity")
-
-
 @app.post("/failed-report")
+@require_api_token
 def failed_report():
-    data = request.get_json(silent=True) or {}
-    missing = [f for f in REQUIRED_FIELDS if not data.get(f)]
-    if missing:
-        return jsonify({"ok": False, "error": f"Missing fields: {', '.join(missing)}"}), 400
+    items = request.get_json(silent=True)
+    if not isinstance(items, list):
+        return jsonify({"ok": False, "error": "Request body must be a JSON array"}), 400
+    if not items:
+        return jsonify({"ok": False, "error": "Request body must not be empty"}), 400
 
     try:
-        send_failed_report(
-            username=str(data["username"]),
-            login=str(data["login"]),
-            reason=str(data["reason"]),
-            link=str(data["link"]),
-            final_equity=str(data["final_equity"]),
-        )
+        results = send_failed_reports(items)
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
-    return jsonify({"ok": True})
+    sent = sum(1 for r in results if r.get("ok"))
+    failed = len(results) - sent
+    return jsonify(
+        {
+            "ok": failed == 0,
+            "sent": sent,
+            "failed": failed,
+            "total": len(results),
+            "results": results,
+        }
+    )
 
 
 @app.post("/failed-report/preview")
+@require_api_token
 def failed_report_preview():
     """Generate image and save to database/ without sending to Telegram."""
     data = request.get_json(silent=True) or {}
