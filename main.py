@@ -133,7 +133,12 @@ async def send_report_to_chats() -> None:
 
     bot = Bot(token=BOT_TOKEN)
     for chat_id in CHAT_IDS:
-        await bot.send_photo(chat_id=chat_id, photo=image_bytes)
+        message = await bot.send_photo(chat_id=chat_id, photo=image_bytes)
+        await bot.pin_chat_message(
+            chat_id=chat_id,
+            message_id=message.message_id,
+            disable_notification=True,
+        )
 
 
 def run_report() -> None:
