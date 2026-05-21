@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Bot
+from telegram.constants import ParseMode
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
@@ -62,8 +63,46 @@ PHASE_PASS_REQUIRED_FIELDS = ("username", "login", "initial_balance", "total_pro
 TRADER_CAPTION_URL = "https://epfund.org/en/wallet?tab=traders&trader={login}&status=inactive"
 
 
-def build_trader_caption(login: str) -> str:
+def build_trader_link(login: str) -> str:
     return TRADER_CAPTION_URL.format(login=login)
+
+
+def _escape_telegram_markdown(text: str) -> str:
+    for char in ("_", "*", "`", "["):
+        text = text.replace(char, f"\\{char}")
+    return text
+
+
+def build_dashboard_link_markdown(login: str) -> str:
+    return f"[Analyze Dashboard]({build_trader_link(login)})"
+
+
+def build_failed_telegram_caption(login: str, reason: str) -> str:
+    link = build_dashboard_link_markdown(login)
+    safe_reason = _escape_telegram_markdown(reason)
+    return (
+        f"❌ 📉 Unfortunately, this account did not pass evaluation.\n\n"
+        f"Breached due to: *{safe_reason}*\n\n"
+        f"👇 {link}"
+    )
+
+
+def build_phase1_telegram_caption(login: str) -> str:
+    link = build_dashboard_link_markdown(login)
+    return (
+        f"✅ 🎉 *Phase 1 passed* — account successfully advanced to Phase 2!\n\n"
+        f"All trading objectives were met.\n\n"
+        f"👇 {link}"
+    )
+
+
+def build_phase2_telegram_caption(login: str) -> str:
+    link = build_dashboard_link_markdown(login)
+    return (
+        f"✅ 🏆 *Phase 2 passed* — account is now funded on Phase Real!\n\n"
+        f"Congratulations on completing the evaluation program.\n\n"
+        f"👇 {link}"
+    )
 
 
 def require_api_token(view: Callable[..., Response]) -> Callable[..., Response]:
@@ -186,7 +225,7 @@ def _build_trader_report_image(
     qr_x = right_edge - qr_size
     qr_y = int(QR_TOP_Y * height)
 
-    qr_img = make_qr_image(build_trader_caption(login), qr_size)
+    qr_img = make_qr_image(build_trader_link(login), qr_size)
     image.paste(qr_img, (qr_x - 105, qr_y + 90))
 
     draw = ImageDraw.Draw(image)
@@ -250,7 +289,12 @@ async def send_image_to_chats(
     bot_token, chat_ids = _telegram_config()
     telegram_bot = bot or Bot(token=bot_token)
     for chat_id in chat_ids:
-        await telegram_bot.send_photo(chat_id=chat_id, photo=image_bytes, caption=caption)
+        await telegram_bot.send_photo(
+            chat_id=chat_id,
+            photo=image_bytes,
+            caption=caption,
+            parse_mode=ParseMode.MARKDOWN,
+        )
 
 
 def _validate_report_item(
@@ -294,7 +338,7 @@ async def send_failed_reports_batch(items: list[dict[str, Any]]) -> list[dict[st
                 reason=str(item["reason"]),
                 final_equity=str(item["final_equity"]),
             )
-            caption = build_trader_caption(login)
+            caption = build_failed_telegram_caption(login, str(item["reason"]))
             await send_image_to_chats(image_bytes, caption=caption, bot=bot)
             results.append(
                 {
@@ -318,6 +362,7 @@ def send_failed_reports(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 async def _send_pass_reports_batch(
     items: list[dict[str, Any]],
     template_path: Path,
+    caption_builder: Callable[[str], str],
 ) -> list[dict[str, Any]]:
     bot_token, chat_ids = _telegram_config()
     bot = Bot(token=bot_token)
@@ -342,7 +387,7 @@ async def _send_pass_reports_batch(
                 initial_balance=str(normalized["initial_balance"]),
                 total_profit=str(normalized["total_profit"]),
             )
-            caption = build_trader_caption(login)
+            caption = caption_builder(login)
             await send_image_to_chats(image_bytes, caption=caption, bot=bot)
             results.append(
                 {
@@ -360,11 +405,11 @@ async def _send_pass_reports_batch(
 
 
 async def send_phase1_reports_batch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return await _send_pass_reports_batch(items, PHASE1_IMAGE)
+    return await _send_pass_reports_batch(items, PHASE1_IMAGE, build_phase1_telegram_caption)
 
 
 async def send_phase2_reports_batch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return await _send_pass_reports_batch(items, PHASE2_IMAGE)
+    return await _send_pass_reports_batch(items, PHASE2_IMAGE, build_phase2_telegram_caption)
 
 
 def send_phase1_reports(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
