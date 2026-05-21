@@ -1,7 +1,7 @@
 import asyncio
 import os
 import uuid
-from datetime import date
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Union
@@ -15,8 +15,17 @@ from telegram import Bot
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 ROOT_DIR = Path(__file__).resolve().parent
+FONTS_DIR = ROOT_DIR / "fonts"
 FAILED_IMAGE = ROOT_DIR / "images" / "failed.png"
 DATABASE_DIR = ROOT_DIR / "database"
+
+REGULAR_FONT_PATHS = [
+    FONTS_DIR / "IRANYekanRegular.ttf",
+]
+BOLD_FONT_PATHS = [
+    FONTS_DIR / "IRANYekanExtraBold.ttf",
+    FONTS_DIR / "IRANYekanBold.ttf",
+]
 TEXT_FILL = "#2d2d2d"
 REASON_FILL = "#c62828"
 DATE_FILL = "#1e6fd9"
@@ -44,17 +53,30 @@ REASON_BOX = (LEFT_TEXT_X+ 0.1, 0.6, 0.78, 0.68)
 app = Flask(__name__)
 
 
-def load_font(size: int) -> Union[ImageFont.FreeTypeFont, ImageFont.ImageFont]:
-    candidates = [
-        "./fonts/IRANYekanExtraBold.ttf",
-        "./fonts/IRANYekanBold.ttf",
-    ]
+def _load_font(
+    size: int,
+    candidates: list[Path],
+) -> Union[ImageFont.FreeTypeFont, ImageFont.ImageFont]:
     for path in candidates:
+        if not path.is_file():
+            continue
         try:
-            return ImageFont.truetype(path, size)
+            return ImageFont.truetype(str(path), size)
         except OSError:
             continue
     return ImageFont.load_default()
+
+
+def load_regular_font(size: int) -> Union[ImageFont.FreeTypeFont, ImageFont.ImageFont]:
+    return _load_font(size, REGULAR_FONT_PATHS)
+
+
+def load_bold_font(size: int) -> Union[ImageFont.FreeTypeFont, ImageFont.ImageFont]:
+    return _load_font(size, BOLD_FONT_PATHS)
+
+
+def format_datetime_now() -> str:
+    return datetime.now().strftime("%Y-%m-%d %I:%M %p")
 
 
 def draw_box_text_left(
@@ -82,8 +104,8 @@ def draw_username_login(
     image_width: int,
     image_height: int,
 ) -> None:
-    font_username = load_font(USERNAME_FONT_SIZE)
-    font_login = load_font(LOGIN_FONT_SIZE)
+    font_username = load_bold_font(USERNAME_FONT_SIZE)
+    font_login = load_regular_font(LOGIN_FONT_SIZE)
 
     user_bbox = draw.textbbox((0, 0), username, font=font_username)
     login_bbox = draw.textbbox((0, 0), login, font=font_login)
@@ -94,7 +116,7 @@ def draw_username_login(
         user_bbox[3] - user_bbox[1],
         login_bbox[3] - login_bbox[1],
     )
-    username_x = int(USER_LOGIN_LEFT_MARGIN * image_width) + 60
+    username_x = int(USER_LOGIN_LEFT_MARGIN * image_width) + 64
     login_x = username_x + user_width + USER_LOGIN_GAP
 
     draw.text((username_x, baseline_y), username, font=font_username, fill=TEXT_FILL, anchor="ls")
@@ -119,10 +141,10 @@ def build_failed_image(
     image = Image.open(FAILED_IMAGE).convert("RGB")
     draw = ImageDraw.Draw(image)
     width, height = image.size
-    body_font = load_font(BODY_FONT_SIZE)
-    date_font = load_font(DATE_FONT_SIZE)
+    body_font = load_regular_font(BODY_FONT_SIZE)
+    date_font = load_regular_font(DATE_FONT_SIZE)
 
-    today_text = date.today().strftime("%Y-%m-%d")
+    today_text = format_datetime_now()
     qr_size = int(width * QR_SIZE_RATIO)
     right_edge = int((1 - RIGHT_MARGIN) * width)
     qr_x = right_edge - qr_size
@@ -130,7 +152,7 @@ def build_failed_image(
 
     date_bbox = draw.textbbox((0, 0), today_text, font=date_font)
     date_width = date_bbox[2] - date_bbox[0]
-    date_x = right_edge - date_width
+    date_x = right_edge - date_width + 50
     date_y = int(DATE_TOP_Y * height)
     draw.text((date_x - 140, date_y - date_bbox[1] + 100), today_text, font=date_font, fill=DATE_FILL)
 
