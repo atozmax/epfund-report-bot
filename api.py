@@ -18,6 +18,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 ROOT_DIR = Path(__file__).resolve().parent
 FONTS_DIR = ROOT_DIR / "fonts"
 FAILED_IMAGE = ROOT_DIR / "images" / "failed.png"
+PHASE1_IMAGE = ROOT_DIR / "images" / "phase1.jpg"
 DATABASE_DIR = ROOT_DIR / "database"
 
 REGULAR_FONT_PATHS = [
@@ -53,7 +54,8 @@ REASON_BOX = (LEFT_TEXT_X+ 0.1, 0.6, 0.78, 0.68)
 
 app = Flask(__name__)
 
-REQUIRED_FIELDS = ("username", "login", "reason", "final_equity")
+FAILED_REQUIRED_FIELDS = ("username", "login", "reason", "final_equity")
+PHASE1_REQUIRED_FIELDS = ("username", "login", "initial_balance", "total_profit")
 
 TRADER_CAPTION_URL = "https://epfund.org/en/wallet?tab=traders&trader={login}&status=inactive"
 
@@ -161,44 +163,67 @@ def make_qr_image(link: str, size: int) -> Image.Image:
     return qr_img.resize((size, size), Image.Resampling.LANCZOS)
 
 
-def build_failed_image(
+def _build_trader_report_image(
+    template_path: Path,
     username: str,
     login: str,
-    reason: str,
-    final_equity: str,
+    top_value: str,
+    bottom_value: str,
+    *,
+    bottom_fill: str = REASON_FILL,
 ) -> bytes:
-    image = Image.open(FAILED_IMAGE).convert("RGB")
+    image = Image.open(template_path).convert("RGB")
     draw = ImageDraw.Draw(image)
     width, height = image.size
-    body_font = load_regular_font(BODY_FONT_SIZE)
     bold_font = load_bold_font(BODY_FONT_SIZE)
 
-    # date_font = load_regular_font(DATE_FONT_SIZE)
-
-    # today_text = format_datetime_now()
     qr_size = int(width * QR_SIZE_RATIO)
     right_edge = int((1 - RIGHT_MARGIN) * width)
     qr_x = right_edge - qr_size
     qr_y = int(QR_TOP_Y * height)
-
-    # date_bbox = draw.textbbox((0, 0), today_text, font=date_font)
-    # date_width = date_bbox[2] - date_bbox[0]
-    # date_x = right_edge - date_width + 50
-    # date_y = int(DATE_TOP_Y * height)
-    # draw.text((date_x - 140, date_y - date_bbox[1] + 100), today_text, font=date_font, fill=DATE_FILL)
 
     qr_img = make_qr_image(build_trader_caption(login), qr_size)
     image.paste(qr_img, (qr_x - 105, qr_y + 90))
 
     draw = ImageDraw.Draw(image)
     draw_username_login(draw, username, login, width, height)
-    draw_box_text_left(draw, final_equity, FINAL_EQUITY_BOX, bold_font)
-    draw_box_text_left(draw, reason, REASON_BOX, bold_font, fill=REASON_FILL)
+    draw_box_text_left(draw, top_value, FINAL_EQUITY_BOX, bold_font)
+    draw_box_text_left(draw, bottom_value, REASON_BOX, bold_font, fill=bottom_fill)
 
     buffer = BytesIO()
     image.save(buffer, format="JPEG", quality=95)
     buffer.seek(0)
     return buffer.getvalue()
+
+
+def build_failed_image(
+    username: str,
+    login: str,
+    reason: str,
+    final_equity: str,
+) -> bytes:
+    return _build_trader_report_image(
+        FAILED_IMAGE,
+        username,
+        login,
+        final_equity,
+        reason,
+    )
+
+
+def build_phase1_image(
+    username: str,
+    login: str,
+    initial_balance: str,
+    total_profit: str,
+) -> bytes:
+    return _build_trader_report_image(
+        PHASE1_IMAGE,
+        username,
+        login,
+        initial_balance,
+        total_profit,
+    )
 
 
 def _telegram_config() -> tuple[str, list[int]]:
@@ -222,13 +247,26 @@ async def send_image_to_chats(
         await telegram_bot.send_photo(chat_id=chat_id, photo=image_bytes, caption=caption)
 
 
-def _validate_report_item(item: Any, index: int) -> Optional[str]:
+def _validate_report_item(
+    item: Any,
+    index: int,
+    required_fields: tuple[str, ...],
+) -> Optional[str]:
     if not isinstance(item, dict):
         return f"Item {index} must be an object"
-    missing = [f for f in REQUIRED_FIELDS if not item.get(f)]
+    missing = [f for f in required_fields if not item.get(f)]
     if missing:
         return f"Item {index} missing fields: {', '.join(missing)}"
     return None
+
+
+def _normalize_phase1_item(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "username": item.get("username"),
+        "login": item.get("login"),
+        "initial_balance": item.get("initial_balance") or item.get("initialBalance"),
+        "total_profit": item.get("total_profit") or item.get("totalProfit"),
+    }
 
 
 async def send_failed_reports_batch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -237,7 +275,7 @@ async def send_failed_reports_batch(items: list[dict[str, Any]]) -> list[dict[st
     results: list[dict[str, Any]] = []
 
     for index, item in enumerate(items):
-        error = _validate_report_item(item, index)
+        error = _validate_report_item(item, index, FAILED_REQUIRED_FIELDS)
         if error:
             results.append({"index": index, "ok": False, "error": error})
             continue
@@ -271,6 +309,50 @@ def send_failed_reports(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return asyncio.run(send_failed_reports_batch(items))
 
 
+async def send_phase1_reports_batch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    bot_token, chat_ids = _telegram_config()
+    bot = Bot(token=bot_token)
+    results: list[dict[str, Any]] = []
+
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            results.append({"index": index, "ok": False, "error": f"Item {index} must be an object"})
+            continue
+        normalized = _normalize_phase1_item(item)
+        error = _validate_report_item(normalized, index, PHASE1_REQUIRED_FIELDS)
+        if error:
+            results.append({"index": index, "ok": False, "error": error})
+            continue
+
+        try:
+            login = str(normalized["login"])
+            image_bytes = build_phase1_image(
+                username=str(normalized["username"]),
+                login=login,
+                initial_balance=str(normalized["initial_balance"]),
+                total_profit=str(normalized["total_profit"]),
+            )
+            caption = build_trader_caption(login)
+            await send_image_to_chats(image_bytes, caption=caption, bot=bot)
+            results.append(
+                {
+                    "index": index,
+                    "ok": True,
+                    "username": str(normalized["username"]),
+                    "login": login,
+                    "caption": caption,
+                }
+            )
+        except Exception as exc:
+            results.append({"index": index, "ok": False, "error": str(exc)})
+
+    return results
+
+
+def send_phase1_reports(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return asyncio.run(send_phase1_reports_batch(items))
+
+
 def save_failed_report_preview(payload: dict[str, Any]) -> dict[str, str]:
     """
     Build the failed-report image from a JSON-like dict and save it locally.
@@ -285,7 +367,7 @@ def save_failed_report_preview(payload: dict[str, Any]) -> dict[str, str]:
 
     Saves to database/failed-<random_id>.jpg and returns metadata.
     """
-    missing = [f for f in REQUIRED_FIELDS if not payload.get(f)]
+    missing = [f for f in FAILED_REQUIRED_FIELDS if not payload.get(f)]
     if missing:
         raise ValueError(f"Missing fields: {', '.join(missing)}")
 
@@ -300,6 +382,46 @@ def save_failed_report_preview(payload: dict[str, Any]) -> dict[str, str]:
     DATABASE_DIR.mkdir(parents=True, exist_ok=True)
     file_id = uuid.uuid4().hex[:12]
     filename = f"failed-{file_id}.jpg"
+    filepath = DATABASE_DIR / filename
+    filepath.write_bytes(image_bytes)
+
+    return {
+        "id": file_id,
+        "filename": filename,
+        "path": str(filepath),
+    }
+
+
+def save_phase1_report_preview(payload: dict[str, Any]) -> dict[str, str]:
+    """
+    Build the phase1 pass-account image from a JSON-like dict and save it locally.
+
+    Example payload:
+        {
+            "username": "pips_shark",
+            "login": "12387427863",
+            "initial_balance": "100000",
+            "total_profit": "12500"
+        }
+
+    Saves to database/phase1-<random_id>.jpg and returns metadata.
+    """
+    normalized = _normalize_phase1_item(payload)
+    missing = [f for f in PHASE1_REQUIRED_FIELDS if not normalized.get(f)]
+    if missing:
+        raise ValueError(f"Missing fields: {', '.join(missing)}")
+
+    login = str(normalized["login"])
+    image_bytes = build_phase1_image(
+        username=str(normalized["username"]),
+        login=login,
+        initial_balance=str(normalized["initial_balance"]),
+        total_profit=str(normalized["total_profit"]),
+    )
+
+    DATABASE_DIR.mkdir(parents=True, exist_ok=True)
+    file_id = uuid.uuid4().hex[:12]
+    filename = f"phase1-{file_id}.jpg"
     filepath = DATABASE_DIR / filename
     filepath.write_bytes(image_bytes)
 
@@ -352,6 +474,48 @@ def failed_report_preview():
     return jsonify({"ok": True, **result})
 
 
+@app.post("/phase1-report")
+@require_api_token
+def phase1_report():
+    items = request.get_json(silent=True)
+    if not isinstance(items, list):
+        return jsonify({"ok": False, "error": "Request body must be a JSON array"}), 400
+    if not items:
+        return jsonify({"ok": False, "error": "Request body must not be empty"}), 400
+
+    try:
+        results = send_phase1_reports(items)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    sent = sum(1 for r in results if r.get("ok"))
+    failed = len(results) - sent
+    return jsonify(
+        {
+            "ok": failed == 0,
+            "sent": sent,
+            "failed": failed,
+            "total": len(results),
+            "results": results,
+        }
+    )
+
+
+@app.post("/phase1-report/preview")
+@require_api_token
+def phase1_report_preview():
+    """Generate phase1 image and save to database/ without sending to Telegram."""
+    data = request.get_json(silent=True) or {}
+    try:
+        result = save_phase1_report_preview(data)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    return jsonify({"ok": True, **result})
+
+
 @app.get("/health")
 def health():
     return jsonify({"ok": True})
@@ -368,6 +532,15 @@ if __name__ == "__main__":
             "final_equity": "378433",
         }
         result = save_failed_report_preview(sample)
+        print(result["path"])
+    elif len(sys.argv) > 1 and sys.argv[1] == "preview-phase1":
+        sample = {
+            "username": "pips_shark",
+            "login": "12387427863",
+            "initial_balance": "100000",
+            "total_profit": "12500",
+        }
+        result = save_phase1_report_preview(sample)
         print(result["path"])
     else:
         app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 4000)))
