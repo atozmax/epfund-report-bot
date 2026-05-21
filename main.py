@@ -24,7 +24,7 @@ if not CHAT_IDS:
     raise ValueError("CHAT_ID_1 is not set")
 
 TREASURY_API = "https://api.epfund.org/v1/landing/home/treasury-info"
-INPUT_IMAGE = "input.png"
+INPUT_IMAGE = "./images/input.png"
 
 # Left inset for all value text, as a fraction of image width (0.0 = image edge, 0.10 = 10% in)
 VALUE_LEFT_MARGIN = 0.15
