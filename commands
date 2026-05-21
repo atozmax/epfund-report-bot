@@ -1,2 +1,0 @@
-docker build -t epfund-report-bot10 .
-docker run -d --name epfund-report-bot10 --network epfund-stage --restart always epfund-report-bot10
