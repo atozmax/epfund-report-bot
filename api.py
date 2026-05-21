@@ -53,7 +53,13 @@ REASON_BOX = (LEFT_TEXT_X+ 0.1, 0.6, 0.78, 0.68)
 
 app = Flask(__name__)
 
-REQUIRED_FIELDS = ("username", "login", "reason", "link", "final_equity")
+REQUIRED_FIELDS = ("username", "login", "reason", "final_equity")
+
+TRADER_CAPTION_URL = "https://epfund.org/en/wallet?tab=traders&trader={login}&status=inactive"
+
+
+def build_trader_caption(login: str) -> str:
+    return TRADER_CAPTION_URL.format(login=login)
 
 
 def require_api_token(view: Callable[..., Response]) -> Callable[..., Response]:
@@ -159,16 +165,17 @@ def build_failed_image(
     username: str,
     login: str,
     reason: str,
-    link: str,
     final_equity: str,
 ) -> bytes:
     image = Image.open(FAILED_IMAGE).convert("RGB")
     draw = ImageDraw.Draw(image)
     width, height = image.size
     body_font = load_regular_font(BODY_FONT_SIZE)
+    bold_font = load_bold_font(BODY_FONT_SIZE)
+
     # date_font = load_regular_font(DATE_FONT_SIZE)
 
-    today_text = format_datetime_now()
+    # today_text = format_datetime_now()
     qr_size = int(width * QR_SIZE_RATIO)
     right_edge = int((1 - RIGHT_MARGIN) * width)
     qr_x = right_edge - qr_size
@@ -180,13 +187,13 @@ def build_failed_image(
     # date_y = int(DATE_TOP_Y * height)
     # draw.text((date_x - 140, date_y - date_bbox[1] + 100), today_text, font=date_font, fill=DATE_FILL)
 
-    qr_img = make_qr_image(link, qr_size)
+    qr_img = make_qr_image(build_trader_caption(login), qr_size)
     image.paste(qr_img, (qr_x - 105, qr_y + 90))
 
     draw = ImageDraw.Draw(image)
     draw_username_login(draw, username, login, width, height)
-    draw_box_text_left(draw, final_equity, FINAL_EQUITY_BOX, body_font)
-    draw_box_text_left(draw, reason, REASON_BOX, body_font, fill=REASON_FILL)
+    draw_box_text_left(draw, final_equity, FINAL_EQUITY_BOX, bold_font)
+    draw_box_text_left(draw, reason, REASON_BOX, bold_font, fill=REASON_FILL)
 
     buffer = BytesIO()
     image.save(buffer, format="JPEG", quality=95)
@@ -204,11 +211,15 @@ def _telegram_config() -> tuple[str, list[int]]:
     return bot_token, [int(chat_id)]
 
 
-async def send_image_to_chats(image_bytes: bytes, bot: Optional[Bot] = None) -> None:
+async def send_image_to_chats(
+    image_bytes: bytes,
+    caption: str,
+    bot: Optional[Bot] = None,
+) -> None:
     bot_token, chat_ids = _telegram_config()
     telegram_bot = bot or Bot(token=bot_token)
     for chat_id in chat_ids:
-        await telegram_bot.send_photo(chat_id=chat_id, photo=image_bytes)
+        await telegram_bot.send_photo(chat_id=chat_id, photo=image_bytes, caption=caption)
 
 
 def _validate_report_item(item: Any, index: int) -> Optional[str]:
@@ -232,20 +243,22 @@ async def send_failed_reports_batch(items: list[dict[str, Any]]) -> list[dict[st
             continue
 
         try:
+            login = str(item["login"])
             image_bytes = build_failed_image(
                 username=str(item["username"]),
-                login=str(item["login"]),
+                login=login,
                 reason=str(item["reason"]),
-                link=str(item["link"]),
                 final_equity=str(item["final_equity"]),
             )
-            await send_image_to_chats(image_bytes, bot=bot)
+            caption = build_trader_caption(login)
+            await send_image_to_chats(image_bytes, caption=caption, bot=bot)
             results.append(
                 {
                     "index": index,
                     "ok": True,
                     "username": str(item["username"]),
-                    "login": str(item["login"]),
+                    "login": login,
+                    "caption": caption,
                 }
             )
         except Exception as exc:
@@ -267,7 +280,6 @@ def save_failed_report_preview(payload: dict[str, Any]) -> dict[str, str]:
             "username": "pips_shark",
             "login": "12387427863",
             "reason": "failed by last week trading",
-            "link": "https://google.com",
             "final_equity": "378433"
         }
 
@@ -277,11 +289,11 @@ def save_failed_report_preview(payload: dict[str, Any]) -> dict[str, str]:
     if missing:
         raise ValueError(f"Missing fields: {', '.join(missing)}")
 
+    login = str(payload["login"])
     image_bytes = build_failed_image(
         username=str(payload["username"]),
-        login=str(payload["login"]),
+        login=login,
         reason=str(payload["reason"]),
-        link=str(payload["link"]),
         final_equity=str(payload["final_equity"]),
     )
 
@@ -353,7 +365,6 @@ if __name__ == "__main__":
             "username": "pips_shark",
             "login": "12387427863",
             "reason": "failed by last week trading",
-            "link": "https://google.com",
             "final_equity": "378433",
         }
         result = save_failed_report_preview(sample)
