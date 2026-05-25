@@ -9,4 +9,6 @@ RUN pip install -r requirements.txt
 COPY .env .env
 COPY . .
 
-CMD ["python", "-u", "main.py"]
+RUN chmod +x entrypoint.sh
+
+CMD ["./entrypoint.sh"]

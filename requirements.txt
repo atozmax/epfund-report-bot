@@ -8,3 +8,4 @@ Flask==3.1.2
 APScheduler==3.11.2
 lxml==6.0.2
 qrcode[pil]==8.2
+instaloader==4.15.1
