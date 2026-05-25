@@ -5,10 +5,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-# App code + env (main.py loads /app/.env via python-dotenv)
-COPY .env .env
 COPY . .
 
 RUN chmod +x entrypoint.sh
+
+EXPOSE 4000
 
 CMD ["./entrypoint.sh"]
