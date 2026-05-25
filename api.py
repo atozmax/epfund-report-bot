@@ -1,7 +1,9 @@
 import asyncio
 import os
+import sys
 import uuid
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit, urlunsplit
 from functools import wraps
 from io import BytesIO
@@ -9,7 +11,10 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Union
 
 import boto3
+import httpx
 import qrcode
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from botocore.client import Config
 from flask import Flask, Response, jsonify, request
 from PIL import Image, ImageDraw, ImageFont
@@ -26,7 +31,16 @@ FAILED_IMAGE = ROOT_DIR / "images" / "failed.png"
 PHASE1_IMAGE = ROOT_DIR / "images" / "phase1.jpg"
 PHASE2_IMAGE = ROOT_DIR / "images" / "phase2.jpg"
 WITHDRAW_IMAGE = ROOT_DIR / "images" / "withdraw.png"
+TREASURY_INPUT_IMAGE = ROOT_DIR / "images" / "input.png"
 DATABASE_DIR = ROOT_DIR / "database"
+
+TREASURY_API = "https://api.epfund.org/v1/landing/home/treasury-info"
+TREASURY_VALUE_LEFT_MARGIN = 0.15
+TREASURY_VALUE_BOXES = [
+    (0.40, 0.62),
+    (0.54, 0.84),
+    (0.68, 1.06),
+]
 
 REGULAR_FONT_PATHS = [
     FONTS_DIR / "IRANYekanRegular.ttf",
@@ -283,6 +297,111 @@ def build_pass_image(
         total_profit,
         bottom_fill=PASS_FILL,
     )
+
+
+def fetch_treasury_info() -> dict:
+    response = httpx.get(TREASURY_API, timeout=30.0)
+    response.raise_for_status()
+    payload = response.json()
+    if not payload.get("success"):
+        raise RuntimeError("Treasury API returned success=false")
+    return payload["result"]
+
+
+def parse_treasury_amount(value: str) -> Decimal:
+    try:
+        return Decimal(str(value).strip())
+    except (InvalidOperation, TypeError) as exc:
+        raise ValueError(f"Invalid numeric value: {value!r}") from exc
+
+
+def format_treasury_amount(value: Decimal) -> str:
+    quantized = value.quantize(Decimal("0.01"))
+    text = f"{quantized:,.2f}"
+    if text.endswith(".00"):
+        return text[:-3]
+    return text
+
+
+def format_treasury_profit_ratio(reserve: Decimal, at_risk: Decimal) -> str:
+    if reserve == 0:
+        return "N/A"
+    ratio = at_risk / reserve
+    return f"{ratio:,.4f}"
+
+
+def draw_treasury_box_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    box: tuple[float, float],
+    font: Union[ImageFont.FreeTypeFont, ImageFont.ImageFont],
+    fill: str = "#2d2d2d",
+) -> None:
+    width, height = draw.im.size
+    x = int(TREASURY_VALUE_LEFT_MARGIN * width)
+    y0 = int(box[0] * height)
+    y1 = int(box[1] * height)
+
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_height = bbox[3] - bbox[1]
+    y = y0 + (y1 - y0 - text_height) / 2 - bbox[1]
+    draw.text((x, y), text, font=font, fill=fill)
+
+
+def build_treasury_report_image(result: dict) -> bytes:
+    reserve = parse_treasury_amount(result["insuranceReserveCapital"])
+    at_risk = parse_treasury_amount(result["atRisk"])
+    profit_ratio = format_treasury_profit_ratio(reserve, at_risk)
+
+    values = [
+        f"${format_treasury_amount(reserve)}",
+        f"${format_treasury_amount(at_risk)}",
+        profit_ratio,
+    ]
+
+    image = Image.open(TREASURY_INPUT_IMAGE).convert("RGB")
+    draw = ImageDraw.Draw(image)
+    font = load_bold_font(96)
+
+    for value, box in zip(values, TREASURY_VALUE_BOXES):
+        draw_treasury_box_text(draw, value, box, font)
+
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG", quality=95)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+async def send_treasury_report_to_chats() -> None:
+    result = fetch_treasury_info()
+    image_bytes = build_treasury_report_image(result)
+
+    bot_token, chat_ids = _telegram_config()
+    bot = Bot(token=bot_token)
+    for chat_id in chat_ids:
+        message = await bot.send_photo(chat_id=chat_id, photo=image_bytes)
+        await bot.pin_chat_message(
+            chat_id=chat_id,
+            message_id=message.message_id,
+            disable_notification=True,
+        )
+
+
+def run_treasury_report() -> None:
+    asyncio.run(send_treasury_report_to_chats())
+
+
+def start_treasury_scheduler() -> BackgroundScheduler:
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(
+        run_treasury_report,
+        trigger=CronTrigger(minute="30"),
+        id="treasury_report",
+        name="Send treasury report",
+    )
+    scheduler.start()
+    print("Scheduler running — treasury reports at :30 each hour")
+    return scheduler
 
 
 def _telegram_config() -> tuple[str, list[int]]:
@@ -880,8 +999,6 @@ def health():
 
 
 if __name__ == "__main__":
-    import sys
-
     if len(sys.argv) > 1 and sys.argv[1] == "preview":
         sample = {
             "username": "pips_shark",
@@ -920,4 +1037,13 @@ if __name__ == "__main__":
         print(result["path"])
 
     else:
-        app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 4000)))
+        port = int(os.environ.get("PORT", 4000))
+        scheduler = start_treasury_scheduler()
+        try:
+            run_treasury_report()
+        except Exception as exc:
+            print(f"Treasury report on startup failed: {exc}")
+        try:
+            app.run(host="0.0.0.0", port=port, use_reloader=False)
+        finally:
+            scheduler.shutdown()
