@@ -2,7 +2,7 @@ services:
   epfund-report-bot:
     build: .
     ports:
-      - "${PORT:-4000}:${PORT:-4000}"
+      - '${PORT:-4000}:${PORT:-4000}'
     env_file:
       - .env
     restart: unless-stopped

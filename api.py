@@ -11,13 +11,14 @@ from typing import Any, Callable, Optional, Union
 import boto3
 import qrcode
 from botocore.client import Config
-from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Bot
 from telegram.constants import ParseMode
 
-load_dotenv(Path(__file__).resolve().parent / ".env")
+from env_loader import load_app_env
+
+load_app_env()
 
 ROOT_DIR = Path(__file__).resolve().parent
 FONTS_DIR = ROOT_DIR / "fonts"

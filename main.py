@@ -2,17 +2,17 @@ import asyncio
 import os
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
-from pathlib import Path
 from typing import Union
 
 import httpx
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
-from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Bot
 
-load_dotenv(Path(__file__).resolve().parent / ".env")
+from env_loader import load_app_env
+
+load_app_env()
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
