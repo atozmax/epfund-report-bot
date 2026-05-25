@@ -2,12 +2,15 @@ import asyncio
 import os
 import uuid
 from datetime import datetime
+from urllib.parse import urlsplit, urlunsplit
 from functools import wraps
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
 
+import boto3
 import qrcode
+from botocore.client import Config
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request
 from PIL import Image, ImageDraw, ImageFont
@@ -373,6 +376,7 @@ async def send_failed_reports_batch(items: list[dict[str, Any]]) -> list[dict[st
                 final_equity=str(item["final_equity"]),
             )
             caption = build_failed_telegram_caption(login, str(item["reason"]))
+            url = _upload_report_image(image_bytes, "failed")
             await send_image_to_chats(image_bytes, caption=caption, bot=bot)
             results.append(
                 {
@@ -381,6 +385,7 @@ async def send_failed_reports_batch(items: list[dict[str, Any]]) -> list[dict[st
                     "username": str(item["username"]),
                     "login": login,
                     "caption": caption,
+                    "url": url,
                 }
             )
         except Exception as exc:
@@ -397,6 +402,7 @@ async def _send_pass_reports_batch(
     items: list[dict[str, Any]],
     template_path: Path,
     caption_builder: Callable[[str], str],
+    filename_prefix: str,
 ) -> list[dict[str, Any]]:
     bot_token, chat_ids = _telegram_config()
     bot = Bot(token=bot_token)
@@ -422,6 +428,7 @@ async def _send_pass_reports_batch(
                 total_profit=str(normalized["total_profit"]),
             )
             caption = caption_builder(login)
+            url = _upload_report_image(image_bytes, filename_prefix)
             await send_image_to_chats(image_bytes, caption=caption, bot=bot)
             results.append(
                 {
@@ -430,6 +437,7 @@ async def _send_pass_reports_batch(
                     "username": str(normalized["username"]),
                     "login": login,
                     "caption": caption,
+                    "url": url,
                 }
             )
         except Exception as exc:
@@ -439,11 +447,15 @@ async def _send_pass_reports_batch(
 
 
 async def send_phase1_reports_batch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return await _send_pass_reports_batch(items, PHASE1_IMAGE, build_phase1_telegram_caption)
+    return await _send_pass_reports_batch(
+        items, PHASE1_IMAGE, build_phase1_telegram_caption, "phase1"
+    )
 
 
 async def send_phase2_reports_batch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return await _send_pass_reports_batch(items, PHASE2_IMAGE, build_phase2_telegram_caption)
+    return await _send_pass_reports_batch(
+        items, PHASE2_IMAGE, build_phase2_telegram_caption, "phase2"
+    )
 
 
 def send_phase1_reports(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -479,6 +491,7 @@ async def send_withdraw_reports_batch(items: list[dict[str, Any]]) -> list[dict[
                 total_profit=_format_report_value(normalized["total_withdraw"]),
             )
             caption = build_withdraw_telegram_caption(login)
+            url = _upload_report_image(image_bytes, "withdraw")
             await send_image_to_chats(image_bytes, caption=caption, bot=bot)
             results.append(
                 {
@@ -487,6 +500,7 @@ async def send_withdraw_reports_batch(items: list[dict[str, Any]]) -> list[dict[
                     "username": str(normalized["username"]),
                     "login": login,
                     "caption": caption,
+                    "url": url,
                 }
             )
         except Exception as exc:
@@ -497,6 +511,54 @@ async def send_withdraw_reports_batch(items: list[dict[str, Any]]) -> list[dict[
 
 def send_withdraw_reports(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return asyncio.run(send_withdraw_reports_batch(items))
+
+
+def _liara_s3_client():
+    endpoint = os.environ.get("LIARA_ENDPOINT", "").strip()
+    access_key = os.environ.get("LIARA_ACCESS_KEY", "").strip()
+    secret_key = os.environ.get("LIARA_SECRET_KEY", "").strip()
+    if not endpoint or not access_key or not secret_key:
+        raise ValueError(
+            "Liara S3 is not configured (LIARA_ENDPOINT, LIARA_ACCESS_KEY, LIARA_SECRET_KEY)"
+        )
+    return boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+        ),
+    )
+
+
+def _public_object_url(bucket: str, key: str) -> str:
+    endpoint = os.environ.get("LIARA_ENDPOINT", "").strip().rstrip("/")
+    url = f"{endpoint}/{bucket}/{key}"
+    parts = urlsplit(url)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+
+def upload_report_image_to_public_bucket(image_bytes: bytes, filename: str) -> str:
+    bucket = os.environ.get("LIARA_PUBLIC_BUCKET_NAME", "").strip()
+    if not bucket:
+        raise ValueError("LIARA_PUBLIC_BUCKET_NAME is not set")
+
+    key = f"reports/{filename}"
+    client = _liara_s3_client()
+    client.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=image_bytes,
+        ContentType="image/jpeg",
+    )
+    return _public_object_url(bucket, key)
+
+
+def _upload_report_image(image_bytes: bytes, prefix: str) -> str:
+    filename = f"{prefix}-{uuid.uuid4().hex[:12]}.jpg"
+    return upload_report_image_to_public_bucket(image_bytes, filename)
 
 
 def save_failed_report_preview(payload: dict[str, Any]) -> dict[str, str]:
@@ -530,11 +592,13 @@ def save_failed_report_preview(payload: dict[str, Any]) -> dict[str, str]:
     filename = f"failed-{file_id}.jpg"
     filepath = DATABASE_DIR / filename
     filepath.write_bytes(image_bytes)
+    url = upload_report_image_to_public_bucket(image_bytes, filename)
 
     return {
         "id": file_id,
         "filename": filename,
         "path": str(filepath),
+        "url": url,
     }
 
 
@@ -562,11 +626,13 @@ def save_pass_report_preview(
     filename = f"{filename_prefix}-{file_id}.jpg"
     filepath = DATABASE_DIR / filename
     filepath.write_bytes(image_bytes)
+    url = upload_report_image_to_public_bucket(image_bytes, filename)
 
     return {
         "id": file_id,
         "filename": filename,
         "path": str(filepath),
+        "url": url,
     }
 
 
@@ -629,11 +695,13 @@ def save_withdraw_report_preview(payload: dict[str, Any]) -> dict[str, str]:
     filename = f"withdraw-{file_id}.jpg"
     filepath = DATABASE_DIR / filename
     filepath.write_bytes(image_bytes)
+    url = upload_report_image_to_public_bucket(image_bytes, filename)
 
     return {
         "id": file_id,
         "filename": filename,
         "path": str(filepath),
+        "url": url,
     }
 
 
