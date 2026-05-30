@@ -1041,7 +1041,8 @@ if __name__ == "__main__":
         port = int(os.environ.get("PORT", 4000))
         scheduler = start_treasury_scheduler()
         try:
-            run_treasury_report()
+            pass
+            # run_treasury_report()
         except Exception as exc:
             print(f"Treasury report on startup failed: {exc}")
         try:
