@@ -396,7 +396,7 @@ def start_treasury_scheduler() -> BackgroundScheduler:
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         run_treasury_report,
-        trigger=CronTrigger(minute="30,10,5,15,45,50,55"),
+        trigger=CronTrigger(minute="5,10,15,20,25,30,35,40,45,50,55"),
         id="treasury_report",
         name="Send treasury report",
     )
