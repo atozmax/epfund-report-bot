@@ -2,6 +2,7 @@ import asyncio
 import os
 import sys
 import time
+import traceback
 import uuid
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -18,6 +19,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from botocore.client import Config
 from flask import Flask, Response, jsonify, request
+from werkzeug.exceptions import HTTPException
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Bot
 from telegram.constants import ParseMode
@@ -78,6 +80,27 @@ FINAL_EQUITY_BOX = (LEFT_TEXT_X+ 0.1, 0.42, 0.78, 0.52)
 REASON_BOX = (LEFT_TEXT_X+ 0.1, 0.6, 0.78, 0.68)
 
 app = Flask(__name__)
+
+
+def _log_error(context: str, exc: Exception) -> None:
+    print(f"{context}: {exc}", file=sys.stderr)
+    traceback.print_exc()
+
+
+def _batch_config_error_results(
+    items: list[Any],
+    exc: Exception,
+) -> list[dict[str, Any]]:
+    message = str(exc)
+    return [{"index": index, "ok": False, "error": message} for index in range(len(items))]
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(exc: Exception) -> Response:
+    if isinstance(exc, HTTPException):
+        return exc
+    _log_error("Unhandled request error", exc)
+    return jsonify({"ok": False, "error": str(exc)}), 500
 
 FAILED_REQUIRED_FIELDS = ("username", "login", "reason", "final_equity")
 PHASE_PASS_REQUIRED_FIELDS = ("username", "login", "initial_balance", "total_profit")
@@ -389,36 +412,60 @@ def build_treasury_report_image(result: dict) -> bytes:
 
 
 async def send_treasury_report_to_chats() -> None:
-    result = fetch_treasury_info()
-    print(result)
-    image_bytes = build_treasury_report_image(result)
+    try:
+        result = fetch_treasury_info()
+    except Exception as exc:
+        _log_error("Treasury report skipped — fetch failed after retries", exc)
+        return
 
-    bot_token, chat_ids = _telegram_config()
+    try:
+        print(result)
+        image_bytes = build_treasury_report_image(result)
+    except Exception as exc:
+        _log_error("Treasury report skipped — image build failed", exc)
+        return
+
+    try:
+        bot_token, chat_ids = _telegram_config()
+    except Exception as exc:
+        _log_error("Treasury report skipped — Telegram config error", exc)
+        return
+
     bot = Bot(token=bot_token)
     for chat_id in chat_ids:
-        message = await bot.send_photo(chat_id=chat_id, photo=image_bytes)
-        await bot.pin_chat_message(
-            chat_id=chat_id,
-            message_id=message.message_id,
-            disable_notification=True,
-        )
+        try:
+            message = await bot.send_photo(chat_id=chat_id, photo=image_bytes)
+            await bot.pin_chat_message(
+                chat_id=chat_id,
+                message_id=message.message_id,
+                disable_notification=True,
+            )
+        except Exception as exc:
+            _log_error(f"Treasury report failed for chat {chat_id}", exc)
 
 
 def run_treasury_report() -> None:
-    asyncio.run(send_treasury_report_to_chats())
+    try:
+        asyncio.run(send_treasury_report_to_chats())
+    except Exception as exc:
+        _log_error("Treasury report job failed", exc)
 
 
-def start_treasury_scheduler() -> BackgroundScheduler:
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(
-        run_treasury_report,
-        trigger=CronTrigger(minute="0,5,10,15,20,25,30,35,40,45,50,55"),
-        id="treasury_report",
-        name="Send treasury report",
-    )
-    scheduler.start()
-    print("Scheduler running — treasury reports every 5 minutes")
-    return scheduler
+def start_treasury_scheduler() -> Optional[BackgroundScheduler]:
+    try:
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(
+            run_treasury_report,
+            trigger=CronTrigger(minute="0,5,10,15,20,25,30,35,40,45,50,55"),
+            id="treasury_report",
+            name="Send treasury report",
+        )
+        scheduler.start()
+        print("Scheduler running — treasury reports every 5 minutes")
+        return scheduler
+    except Exception as exc:
+        _log_error("Treasury scheduler failed to start", exc)
+        return None
 
 
 def _telegram_config() -> tuple[str, list[int]]:
@@ -438,13 +485,20 @@ async def send_image_to_chats(
 ) -> None:
     bot_token, chat_ids = _telegram_config()
     telegram_bot = bot or Bot(token=bot_token)
+    errors: list[str] = []
     for chat_id in chat_ids:
-        await telegram_bot.send_photo(
-            chat_id=chat_id,
-            photo=image_bytes,
-            caption=caption,
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        try:
+            await telegram_bot.send_photo(
+                chat_id=chat_id,
+                photo=image_bytes,
+                caption=caption,
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as exc:
+            _log_error(f"Failed to send image to chat {chat_id}", exc)
+            errors.append(f"chat {chat_id}: {exc}")
+    if errors:
+        raise RuntimeError("; ".join(errors))
 
 
 def _field_missing(item: dict[str, Any], field: str) -> bool:
@@ -494,7 +548,12 @@ def _normalize_withdraw_item(item: dict[str, Any]) -> dict[str, Any]:
 
 
 async def send_failed_reports_batch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    bot_token, chat_ids = _telegram_config()
+    try:
+        bot_token, chat_ids = _telegram_config()
+    except Exception as exc:
+        _log_error("Failed report batch skipped — Telegram config error", exc)
+        return _batch_config_error_results(items, exc)
+
     bot = Bot(token=bot_token)
     results: list[dict[str, Any]] = []
 
@@ -532,7 +591,11 @@ async def send_failed_reports_batch(items: list[dict[str, Any]]) -> list[dict[st
 
 
 def send_failed_reports(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return asyncio.run(send_failed_reports_batch(items))
+    try:
+        return asyncio.run(send_failed_reports_batch(items))
+    except Exception as exc:
+        _log_error("send_failed_reports failed", exc)
+        return _batch_config_error_results(items, exc)
 
 
 async def _send_pass_reports_batch(
@@ -541,7 +604,12 @@ async def _send_pass_reports_batch(
     caption_builder: Callable[[str], str],
     filename_prefix: str,
 ) -> list[dict[str, Any]]:
-    bot_token, chat_ids = _telegram_config()
+    try:
+        bot_token, chat_ids = _telegram_config()
+    except Exception as exc:
+        _log_error("Pass report batch skipped — Telegram config error", exc)
+        return _batch_config_error_results(items, exc)
+
     bot = Bot(token=bot_token)
     results: list[dict[str, Any]] = []
 
@@ -596,15 +664,28 @@ async def send_phase2_reports_batch(items: list[dict[str, Any]]) -> list[dict[st
 
 
 def send_phase1_reports(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return asyncio.run(send_phase1_reports_batch(items))
+    try:
+        return asyncio.run(send_phase1_reports_batch(items))
+    except Exception as exc:
+        _log_error("send_phase1_reports failed", exc)
+        return _batch_config_error_results(items, exc)
 
 
 def send_phase2_reports(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return asyncio.run(send_phase2_reports_batch(items))
+    try:
+        return asyncio.run(send_phase2_reports_batch(items))
+    except Exception as exc:
+        _log_error("send_phase2_reports failed", exc)
+        return _batch_config_error_results(items, exc)
 
 
 async def send_withdraw_reports_batch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    bot_token, chat_ids = _telegram_config()
+    try:
+        bot_token, chat_ids = _telegram_config()
+    except Exception as exc:
+        _log_error("Withdraw report batch skipped — Telegram config error", exc)
+        return _batch_config_error_results(items, exc)
+
     bot = Bot(token=bot_token)
     results: list[dict[str, Any]] = []
 
@@ -647,7 +728,11 @@ async def send_withdraw_reports_batch(items: list[dict[str, Any]]) -> list[dict[
 
 
 def send_withdraw_reports(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return asyncio.run(send_withdraw_reports_batch(items))
+    try:
+        return asyncio.run(send_withdraw_reports_batch(items))
+    except Exception as exc:
+        _log_error("send_withdraw_reports failed", exc)
+        return _batch_config_error_results(items, exc)
 
 
 def _liara_s3_client():
@@ -1060,8 +1145,9 @@ if __name__ == "__main__":
             pass
             # run_treasury_report()
         except Exception as exc:
-            print(f"Treasury report on startup failed: {exc}")
+            _log_error("Treasury report on startup failed", exc)
         try:
             app.run(host="0.0.0.0", port=port, use_reloader=False)
         finally:
-            scheduler.shutdown()
+            if scheduler is not None:
+                scheduler.shutdown()
