@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+import time
 import uuid
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -35,6 +36,8 @@ TREASURY_INPUT_IMAGE = ROOT_DIR / "images" / "input.png"
 DATABASE_DIR = ROOT_DIR / "database"
 
 TREASURY_API = "https://api.epfund.org/v1/landing/home/treasury-info"
+TREASURY_FETCH_MAX_ATTEMPTS = 3
+TREASURY_FETCH_RETRY_DELAY_SECONDS = 2
 TREASURY_VALUE_LEFT_MARGIN = 0.15
 TREASURY_VALUE_BOXES = [
     (0.40, 0.62),
@@ -300,12 +303,25 @@ def build_pass_image(
 
 
 def fetch_treasury_info() -> dict:
-    response = httpx.get(TREASURY_API, timeout=30.0)
-    response.raise_for_status()
-    payload = response.json()
-    if not payload.get("success"):
-        raise RuntimeError("Treasury API returned success=false")
-    return payload["result"]
+    last_error: Optional[Exception] = None
+    for attempt in range(1, TREASURY_FETCH_MAX_ATTEMPTS + 1):
+        try:
+            response = httpx.get(TREASURY_API, timeout=30.0)
+            response.raise_for_status()
+            payload = response.json()
+            if not payload.get("success"):
+                raise RuntimeError("Treasury API returned success=false")
+            return payload["result"]
+        except Exception as exc:
+            last_error = exc
+            if attempt < TREASURY_FETCH_MAX_ATTEMPTS:
+                print(
+                    f"Treasury fetch attempt {attempt}/{TREASURY_FETCH_MAX_ATTEMPTS} "
+                    f"failed: {exc}; retrying in {TREASURY_FETCH_RETRY_DELAY_SECONDS}s..."
+                )
+                time.sleep(TREASURY_FETCH_RETRY_DELAY_SECONDS)
+    assert last_error is not None
+    raise last_error
 
 
 def parse_treasury_amount(value: str) -> Decimal:
