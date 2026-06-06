@@ -434,15 +434,28 @@ async def send_treasury_report_to_chats() -> None:
     bot = Bot(token=bot_token)
     for chat_id in chat_ids:
         try:
-            caption = '''
-🛡 پارامتر Insurance Reserve Capital
+            print(result)
+            reserve = parse_treasury_amount(result["insuranceReserveCapital"])
+            at_risk = parse_treasury_amount(result["atRisk"])
+            profit_ratio = format_treasury_profit_ratio(reserve, at_risk)
+
+            caption = f'''
+*🛡 Insurance Reserve Capital*  :  ${reserve:,.2f}
+
 نمایانگر سرمایه ذخیره‌ای است که برای پشتیبانی از ساختار مالی و مدیریت تعهدات شرکت در نظر گرفته شده است.
 
-⚠️ پارامتر At Risk
-نمایانگر میزان ریسک فعلی شرکت در ساختار مالی EPFund است.
+*⚠️  At Risk* : ${at_risk:,.2f}
 
-📉 پارامتر Risk Ratio
-نسبت ریسک به پشتوانه مالی شرکت را مشخص می‌کند و دید روشن‌تری از سلامت ساختار مالی ارائه می‌دهد.'''
+پارامتر  *At Risk* نشان‌دهنده میانگین میزان برداشت مورد انتظار از تمامی اکانت‌های فعال در پراپ‌فرم است.
+
+هر اکانت، بسته به مرحله‌ای که در آن قرار دارد، احتمال موفقیت در برداشت و امید ریاضی سودآوری، دارای یک ارزش مورد انتظار مشخص است. پارامتر *At Risk* با تجمیع این مقادیر، میزان کل تعهدات بالقوه شرکت در برابر اکانت‌های فعال را نمایش می‌دهد.
+
+به بیان ساده، این شاخص نشان می‌دهد در صورت ادامه فعالیت اکانت‌های فعلی، چه میزان سرمایه در معرض برداشت قرار دارد.
+
+📉  *Risk Ratio* : {profit_ratio:,.4f}
+
+نسبت ریسک به پشتوانه مالی شرکت را مشخص می‌کند و دید روشن‌تری از سلامت ساختار مالی ارائه می‌دهد.
+'''
             message = await bot.send_photo(
                 chat_id=chat_id, 
                 photo=image_bytes,
@@ -1162,7 +1175,7 @@ if __name__ == "__main__":
         scheduler = start_treasury_scheduler()
         try:
             pass
-            # run_treasury_report()
+            run_treasury_report()
         except Exception as exc:
             _log_error("Treasury report on startup failed", exc)
         try:
