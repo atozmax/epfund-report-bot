@@ -129,7 +129,7 @@ def build_failed_telegram_caption(login: str, reason: str) -> str:
     return (
         f"❌ 📉 Unfortunately, this account did not pass evaluation.\n\n"
         f"Breached due to: *{safe_reason}*\n\n"
-        f"👇 {link}"
+        f"👉 {link}"
     )
 
 
@@ -138,7 +138,7 @@ def build_phase1_telegram_caption(login: str) -> str:
     return (
         f"✅ 🎉 *Phase 1 passed* — account successfully advanced to Phase 2!\n\n"
         f"All trading objectives were met.\n\n"
-        f"👇 {link}"
+        f"👉 {link}"
     )
 
 
@@ -147,7 +147,7 @@ def build_phase2_telegram_caption(login: str) -> str:
     return (
         f"✅ 🏆 *Phase 2 passed* — account is now funded on Phase Real!\n\n"
         f"Congratulations on completing the evaluation program.\n\n"
-        f"👇 {link}"
+        f"👉 {link}"
     )
 
 
@@ -155,7 +155,7 @@ def build_withdraw_telegram_caption(login: str) -> str:
     link = build_dashboard_link_markdown(login)
     return (
         f"💸 *Withdrawal processed* for this account.\n\n"
-        f"👇 {link}"
+        f"👉 {link}"
     )
 
 
@@ -434,12 +434,26 @@ async def send_treasury_report_to_chats() -> None:
     bot = Bot(token=bot_token)
     for chat_id in chat_ids:
         try:
-            message = await bot.send_photo(chat_id=chat_id, photo=image_bytes)
-            await bot.pin_chat_message(
-                chat_id=chat_id,
-                message_id=message.message_id,
-                disable_notification=True,
-            )
+            caption = '''
+🛡 پارامتر Insurance Reserve Capital
+نمایانگر سرمایه ذخیره‌ای است که برای پشتیبانی از ساختار مالی و مدیریت تعهدات شرکت در نظر گرفته شده است.
+
+⚠️ پارامتر At Risk
+نمایانگر میزان ریسک فعلی شرکت در ساختار مالی EPFund است.
+
+📉 پارامتر Risk Ratio
+نسبت ریسک به پشتوانه مالی شرکت را مشخص می‌کند و دید روشن‌تری از سلامت ساختار مالی ارائه می‌دهد.'''
+            message = await bot.send_photo(
+                chat_id=chat_id, 
+                photo=image_bytes,
+                caption=caption,
+                parse_mode=ParseMode.MARKDOWN,
+                )
+            # await bot.pin_chat_message(
+            #     chat_id=chat_id,
+            #     message_id=message.message_id,
+            #     disable_notification=True,
+            # )
         except Exception as exc:
             _log_error(f"Treasury report failed for chat {chat_id}", exc)
 
@@ -488,11 +502,16 @@ async def send_image_to_chats(
     errors: list[str] = []
     for chat_id in chat_ids:
         try:
-            await telegram_bot.send_photo(
+            message = await telegram_bot.send_photo(
                 chat_id=chat_id,
                 photo=image_bytes,
                 caption=caption,
                 parse_mode=ParseMode.MARKDOWN,
+            )
+            await telegram_bot.pin_chat_message(
+                chat_id=chat_id,
+                message_id=message.message_id,
+                disable_notification=True,
             )
         except Exception as exc:
             _log_error(f"Failed to send image to chat {chat_id}", exc)
