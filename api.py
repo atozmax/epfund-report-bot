@@ -434,7 +434,6 @@ async def send_treasury_report_to_chats() -> None:
     bot = Bot(token=bot_token)
     for chat_id in chat_ids:
         try:
-            print(result)
             reserve = parse_treasury_amount(result["insuranceReserveCapital"])
             at_risk = parse_treasury_amount(result["atRisk"])
             profit_ratio = format_treasury_profit_ratio(reserve, at_risk)
@@ -452,7 +451,7 @@ async def send_treasury_report_to_chats() -> None:
 
 به بیان ساده، این شاخص نشان می‌دهد در صورت ادامه فعالیت اکانت‌های فعلی، چه میزان سرمایه در معرض برداشت قرار دارد.
 
-📉  *Risk Ratio* : {profit_ratio:,.4f}
+📉  *Risk Ratio* : {profit_ratio}
 
 نسبت ریسک به پشتوانه مالی شرکت را مشخص می‌کند و دید روشن‌تری از سلامت ساختار مالی ارائه می‌دهد.
 '''
