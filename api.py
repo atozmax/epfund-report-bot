@@ -1174,7 +1174,7 @@ if __name__ == "__main__":
         scheduler = start_treasury_scheduler()
         try:
             pass
-            run_treasury_report()
+            # run_treasury_report()
         except Exception as exc:
             _log_error("Treasury report on startup failed", exc)
         try:
