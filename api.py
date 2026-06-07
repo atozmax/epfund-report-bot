@@ -439,11 +439,11 @@ async def send_treasury_report_to_chats() -> None:
             profit_ratio = format_treasury_profit_ratio(reserve, at_risk)
 
             caption = f'''
-*🛡 Insurance Reserve Capital*  :  ${reserve:,.2f}
+*🛡 Insurance Reserve Capital*  :  *${reserve:,.2f}*
 
 نمایانگر سرمایه ذخیره‌ای است که برای پشتیبانی از ساختار مالی و مدیریت تعهدات شرکت در نظر گرفته شده است.
 
-*⚠️  At Risk* : ${at_risk:,.2f}
+*⚠️  At Risk* : *${at_risk:,.2f}*
 
 پارامتر  *At Risk* نشان‌دهنده میانگین میزان برداشت مورد انتظار از تمامی اکانت‌های فعال در پراپ‌فرم است.
 
@@ -451,7 +451,7 @@ async def send_treasury_report_to_chats() -> None:
 
 به بیان ساده، این شاخص نشان می‌دهد در صورت ادامه فعالیت اکانت‌های فعلی، چه میزان سرمایه در معرض برداشت قرار دارد.
 
-📉  *Risk Ratio* : {profit_ratio}
+📉  *Risk Ratio* : *{profit_ratio}*
 
 نسبت ریسک به پشتوانه مالی شرکت را مشخص می‌کند و دید روشن‌تری از سلامت ساختار مالی ارائه می‌دهد.
 '''
