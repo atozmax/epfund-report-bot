@@ -33,7 +33,7 @@ FONTS_DIR = ROOT_DIR / "fonts"
 FAILED_IMAGE = ROOT_DIR / "images" / "failed.png"
 PHASE1_IMAGE = ROOT_DIR / "images" / "phase1.jpg"
 PHASE2_IMAGE = ROOT_DIR / "images" / "phase2.jpg"
-WITHDRAW_IMAGE = ROOT_DIR / "images" / "withdraw.png"
+WITHDRAW_IMAGE = ROOT_DIR / "images" / "withdraw2.png"
 TREASURY_INPUT_IMAGE = ROOT_DIR / "images" / "input.png"
 DATABASE_DIR = ROOT_DIR / "database"
 
@@ -154,8 +154,15 @@ def build_phase2_telegram_caption(login: str) -> str:
 def build_withdraw_telegram_caption(login: str) -> str:
     link = build_dashboard_link_markdown(login)
     return (
-        f"💸 *Withdrawal processed* for this account.\n\n"
-        f"👉 {link}"
+        f"✅ 🎉 Trader Payout Approved\n\n"
+        f"This trader's profit withdrawal has been successfully approved.\n\n"
+        f"This certificate officially confirms the payout issued by EPFund and reflects "
+        f"our commitment to transparency, trust, and a verifiable financial structure "
+        f"within decentralized trading.\n\n"
+        f"Review time by AI: 1 minute\n\n"
+        f"👉 {link}\n\n"
+        f"EPFund\n"
+        f"The First Decentralized Prop Firm"
     )
 
 
