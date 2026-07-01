@@ -122,15 +122,22 @@ WITHDRAW_CERT_FONT_PATHS = {
     "baskervville": [FONTS_DIR / "Baskervville_SC" / "static" / "BaskervvilleSC-Regular.ttf"],
 }
 WITHDRAW_CERT_META_FONT_SIZE = 50
+WITHDRAW_CERT_META_REFERENCE_SIZE = (1809, 2560)
+WITHDRAW_CERT_META_CERT_ORIGIN = (141, 153)
+WITHDRAW_CERT_META_DATE_ORIGIN = (1609, 154)
 WITHDRAW_CERT_USERNAME_FONT_SIZE = 240
-WITHDRAW_CERT_USERNAME_BOX = (811, 927, 2051, 452)
+WITHDRAW_CERT_USERNAME_CENTER_REF = (897, 678)
+WITHDRAW_CERT_USERNAME_MAX_WIDTH = 2051
+WITHDRAW_CERT_USERNAME_MAX_HEIGHT = 452
+WITHDRAW_CERT_TOTAL_AMOUNT_CENTER_REF = (899.5, 981.5)
+WITHDRAW_CERT_PROFIT_WITHDRAW_CENTER_REF = (416.5, 952.5)
+WITHDRAW_CERT_PROFIT_SHARE_CENTER_REF = (1352.5, 953)
+WITHDRAW_CERT_TOTAL_AMOUNT_FONT_SIZE = 240
+WITHDRAW_CERT_PROFIT_VALUE_FONT_SIZE = 120
 WITHDRAW_CERT_META_FILL = (142, 142, 142, int(255 * 0.80))
 WITHDRAW_CERT_USERNAME_FILL = "#040403"
-WITHDRAW_CERT_FONT_SIZES = {
-    "total_amount": 40,
-    "profit": 28,
-}
-WITHDRAW_CERT_META_LINE_GAP = 0
+WITHDRAW_CERT_AMOUNT_FILL = "#040403"
+WITHDRAW_CERT_META_LINE_GAP = 12
 
 TRADER_CAPTION_URL = "https://epfund.org/en/wallet?tab=traders&trader={login}&status=inactive"
 
@@ -550,20 +557,41 @@ def _fit_withdraw_cert_username_font(
     return load_withdraw_cert_font("arizonia", min_size)
 
 
+def _withdraw_cert_reference_position(
+    ref_x: float,
+    ref_y: float,
+    image_width: int,
+    image_height: int,
+) -> tuple[float, float]:
+    return (
+        _withdraw_cert_meta_scale_x(ref_x, image_width),
+        _withdraw_cert_meta_scale_y(ref_y, image_height),
+    )
+
+
+def _withdraw_cert_total_font_size(image_height: int) -> int:
+    return max(1, int(round(WITHDRAW_CERT_TOTAL_AMOUNT_FONT_SIZE * image_height / WITHDRAW_CERT_DESIGN_HEIGHT)))
+
+
+def _withdraw_cert_profit_font_size(image_height: int) -> int:
+    return max(1, int(round(WITHDRAW_CERT_PROFIT_VALUE_FONT_SIZE * image_height / WITHDRAW_CERT_DESIGN_HEIGHT)))
+
+
 def _draw_withdraw_cert_username(
     draw: ImageDraw.ImageDraw,
     username: str,
     image_width: int,
     image_height: int,
 ) -> None:
-    box_left, box_top, box_width, box_height = WITHDRAW_CERT_USERNAME_BOX
-    left = _withdraw_cert_scale_x(box_left, image_width)
-    top = _withdraw_cert_scale_y(box_top, image_height)
-    width = _withdraw_cert_scale_x(box_width, image_width)
-    height = _withdraw_cert_scale_y(box_height, image_height)
-    font = _fit_withdraw_cert_username_font(username, image_width, image_height, width, height)
-    center_x = left + width / 2
-    center_y = top + height / 2
+    center_x, center_y = _withdraw_cert_reference_position(
+        WITHDRAW_CERT_USERNAME_CENTER_REF[0],
+        WITHDRAW_CERT_USERNAME_CENTER_REF[1],
+        image_width,
+        image_height,
+    )
+    box_width = image_width * WITHDRAW_CERT_USERNAME_MAX_WIDTH / WITHDRAW_CERT_DESIGN_WIDTH
+    box_height = image_height * WITHDRAW_CERT_USERNAME_MAX_HEIGHT / WITHDRAW_CERT_DESIGN_HEIGHT
+    font = _fit_withdraw_cert_username_font(username, image_width, image_height, box_width, box_height)
     draw.text(
         (center_x, center_y),
         username,
@@ -571,6 +599,53 @@ def _draw_withdraw_cert_username(
         fill=WITHDRAW_CERT_USERNAME_FILL,
         anchor="mm",
     )
+
+
+def _draw_withdraw_cert_amounts(
+    draw: ImageDraw.ImageDraw,
+    *,
+    total_amount: str,
+    profit_share: str,
+    profit_withdraw: str,
+    image_width: int,
+    image_height: int,
+) -> None:
+    total_font = load_withdraw_cert_font("baskervville", _withdraw_cert_total_font_size(image_height))
+    profit_font = load_withdraw_cert_font("baskervville", _withdraw_cert_profit_font_size(image_height))
+
+    placements = (
+        (WITHDRAW_CERT_TOTAL_AMOUNT_CENTER_REF, _format_withdraw_cert_currency(total_amount), total_font),
+        (WITHDRAW_CERT_PROFIT_WITHDRAW_CENTER_REF, _format_withdraw_cert_currency(profit_withdraw), profit_font),
+        (WITHDRAW_CERT_PROFIT_SHARE_CENTER_REF, _format_withdraw_cert_profit_share(profit_share), profit_font),
+    )
+    for (ref_x, ref_y), text, font in placements:
+        x, y = _withdraw_cert_reference_position(ref_x, ref_y, image_width, image_height)
+        draw.text((x, y), text, font=font, fill=WITHDRAW_CERT_AMOUNT_FILL, anchor="mm")
+
+
+def _withdraw_cert_meta_scale_x(design_value: float, image_width: int) -> float:
+    ref_width, _ref_height = WITHDRAW_CERT_META_REFERENCE_SIZE
+    return design_value * image_width / ref_width
+
+
+def _withdraw_cert_meta_scale_y(design_value: float, image_height: int) -> float:
+    _ref_width, ref_height = WITHDRAW_CERT_META_REFERENCE_SIZE
+    return design_value * image_height / ref_height
+
+
+def _withdraw_cert_meta_font_size(image_height: int) -> int:
+    return max(1, int(round(WITHDRAW_CERT_META_FONT_SIZE * image_height / WITHDRAW_CERT_DESIGN_HEIGHT)))
+
+
+def _withdraw_cert_meta_positions(
+    image_width: int,
+    image_height: int,
+) -> tuple[float, float, float, float]:
+    cert_x = _withdraw_cert_meta_scale_x(WITHDRAW_CERT_META_CERT_ORIGIN[0], image_width)
+    cert_y = _withdraw_cert_meta_scale_y(WITHDRAW_CERT_META_CERT_ORIGIN[1], image_height)
+    date_x = _withdraw_cert_meta_scale_x(WITHDRAW_CERT_META_DATE_ORIGIN[0], image_width)
+    date_y = _withdraw_cert_meta_scale_y(WITHDRAW_CERT_META_DATE_ORIGIN[1], image_height)
+    return cert_x, cert_y, date_x, date_y
 
 
 def _withdraw_cert_ordinal(day: int) -> str:
@@ -606,7 +681,7 @@ def _draw_withdraw_cert_meta_block(
 ) -> None:
     draw.text((x, y), label, font=font, fill=fill, anchor=anchor)
     label_bbox = draw.textbbox((x, y), label, font=font, anchor=anchor)
-    gap = _withdraw_cert_scale_y(WITHDRAW_CERT_META_LINE_GAP, draw.im.size[1])
+    gap = _withdraw_cert_meta_scale_y(WITHDRAW_CERT_META_LINE_GAP, draw.im.size[1])
     value_y = label_bbox[3] + gap
     draw.text((x, value_y), value, font=font, fill=fill, anchor=anchor)
 
@@ -652,18 +727,9 @@ def build_withdraw_cert_image(
     draw = ImageDraw.Draw(image)
     width, height = image.size
 
-    meta_font = load_withdraw_cert_font(
-        "be_vietnam",
-        _withdraw_cert_design_font_size(WITHDRAW_CERT_META_FONT_SIZE, height),
-    )
-    total_font = load_withdraw_cert_font("baskervville", WITHDRAW_CERT_FONT_SIZES["total_amount"])
-    profit_font = load_withdraw_cert_font("baskervville", WITHDRAW_CERT_FONT_SIZES["profit"])
+    meta_font = load_withdraw_cert_font("be_vietnam", _withdraw_cert_meta_font_size(height))
 
-    cert_x, cert_y = _withdraw_cert_point(width, height, left=227.5, top=227.5)
-    date_x, date_y = _withdraw_cert_point(width, height, right=315, top=227.5)
-    _, total_y = _withdraw_cert_point(width, height, top=1419)
-    profit_share_x, profit_y = _withdraw_cert_point(width, height, left=497.75, top=1471)
-    profit_withdraw_x, _ = _withdraw_cert_point(width, height, left=610.25, top=1471)
+    cert_x, cert_y, date_x, date_y = _withdraw_cert_meta_positions(width, height)
 
     tx_slot, analyze_slot = _withdraw_cert_qr_slots(str(WITHDRAW_IMAGE), width, height)
 
@@ -686,26 +752,13 @@ def build_withdraw_cert_image(
         anchor="rt",
     )
     _draw_withdraw_cert_username(draw, username, width, height)
-    draw.text(
-        (width / 2, total_y),
-        total_amount,
-        font=total_font,
-        fill=TEXT_FILL,
-        anchor="mt",
-    )
-    draw.text(
-        (profit_share_x, profit_y),
-        profit_share,
-        font=profit_font,
-        fill=TEXT_FILL,
-        anchor="lt",
-    )
-    draw.text(
-        (profit_withdraw_x, profit_y),
-        profit_withdraw,
-        font=profit_font,
-        fill=TEXT_FILL,
-        anchor="lt",
+    _draw_withdraw_cert_amounts(
+        draw,
+        total_amount=total_amount,
+        profit_share=profit_share,
+        profit_withdraw=profit_withdraw,
+        image_width=width,
+        image_height=height,
     )
 
     tx_cx, tx_cy, tx_qr_size = tx_slot
@@ -957,6 +1010,30 @@ def _format_report_value(value: Any) -> str:
     if isinstance(value, float):
         return str(int(value)) if value.is_integer() else str(value)
     return str(value)
+
+
+def _format_withdraw_cert_currency(value: Any) -> str:
+    raw = _format_report_value(value).strip()
+    if raw.startswith("$"):
+        return raw if raw.startswith("$ ") else f"$ {raw[1:].strip()}"
+    try:
+        number = float(raw.replace(",", ""))
+        if number.is_integer():
+            formatted = f"{int(number):,}"
+        else:
+            formatted = f"{number:,.2f}"
+    except (ValueError, TypeError):
+        formatted = raw
+    return f"$ {formatted}"
+
+
+def _format_withdraw_cert_profit_share(value: Any) -> str:
+    raw = _format_report_value(value).strip()
+    if raw.startswith("%"):
+        return raw if raw.startswith("% ") else f"% {raw[1:].strip()}"
+    if raw.endswith("%"):
+        return f"% {raw[:-1].strip()}"
+    return f"% {raw}"
 
 
 def _normalize_pass_item(item: dict[str, Any]) -> dict[str, Any]:
