@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit, urlunsplit
-from functools import wraps
+from functools import lru_cache, wraps
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
@@ -33,7 +33,9 @@ FONTS_DIR = ROOT_DIR / "fonts"
 FAILED_IMAGE = ROOT_DIR / "images" / "failed.png"
 PHASE1_IMAGE = ROOT_DIR / "images" / "phase1.jpg"
 PHASE2_IMAGE = ROOT_DIR / "images" / "phase2.jpg"
-WITHDRAW_IMAGE = ROOT_DIR / "images" / "withdraw2.png"
+WITHDRAW_IMAGE = ROOT_DIR / "images" / "withdraw-template.png"
+WITHDRAW_CERT_DESIGN_WIDTH = 2975
+WITHDRAW_CERT_DESIGN_HEIGHT = 4210
 TREASURY_INPUT_IMAGE = ROOT_DIR / "images" / "input.png"
 DATABASE_DIR = ROOT_DIR / "database"
 
@@ -104,7 +106,31 @@ def handle_unexpected_error(exc: Exception) -> Response:
 
 FAILED_REQUIRED_FIELDS = ("username", "login", "reason", "final_equity")
 PHASE_PASS_REQUIRED_FIELDS = ("username", "login", "initial_balance", "total_profit")
-WITHDRAW_REQUIRED_FIELDS = ("username", "login", "withdraw_amount", "total_withdraw")
+WITHDRAW_REQUIRED_FIELDS = (
+    "cert_id",
+    "date",
+    "username",
+    "total_amount",
+    "profit_share",
+    "profit_withdraw",
+    "tx_link",
+    "analyze_link",
+)
+WITHDRAW_CERT_FONT_PATHS = {
+    "be_vietnam": [FONTS_DIR / "Be_Vietnam_Pro" / "BeVietnamPro-Light.ttf"],
+    "arizonia": [FONTS_DIR / "Arizonia" / "Arizonia-Regular.ttf"],
+    "baskervville": [FONTS_DIR / "Baskervville_SC" / "static" / "BaskervvilleSC-Regular.ttf"],
+}
+WITHDRAW_CERT_META_FONT_SIZE = 50
+WITHDRAW_CERT_USERNAME_FONT_SIZE = 240
+WITHDRAW_CERT_USERNAME_BOX = (811, 927, 2051, 452)
+WITHDRAW_CERT_META_FILL = (142, 142, 142, int(255 * 0.80))
+WITHDRAW_CERT_USERNAME_FILL = "#040403"
+WITHDRAW_CERT_FONT_SIZES = {
+    "total_amount": 40,
+    "profit": 28,
+}
+WITHDRAW_CERT_META_LINE_GAP = 0
 
 TRADER_CAPTION_URL = "https://epfund.org/en/wallet?tab=traders&trader={login}&status=inactive"
 
@@ -151,16 +177,17 @@ def build_phase2_telegram_caption(login: str) -> str:
     )
 
 
-def build_withdraw_telegram_caption(login: str) -> str:
-    link = build_dashboard_link_markdown(login)
+def build_withdraw_telegram_caption(username: str, analyze_link: str) -> str:
+    safe_username = _escape_telegram_markdown(username)
     return (
         f"✅ 🎉 Trader Payout Approved\n\n"
         f"This trader's profit withdrawal has been successfully approved.\n\n"
+        f"Certificate issued for *{safe_username}*.\n\n"
         f"This certificate officially confirms the payout issued by EPFund and reflects "
         f"our commitment to transparency, trust, and a verifiable financial structure "
         f"within decentralized trading.\n\n"
         f"Review time by AI: 1 minute\n\n"
-        f"👉 {link}\n\n"
+        f"👉 [Analyze Dashboard]({analyze_link})\n\n"
         f"EPFund\n"
         f"The First Decentralized Prop Firm"
     )
@@ -207,6 +234,13 @@ def load_regular_font(size: int) -> Union[ImageFont.FreeTypeFont, ImageFont.Imag
 
 def load_bold_font(size: int) -> Union[ImageFont.FreeTypeFont, ImageFont.ImageFont]:
     return _load_font(size, BOLD_FONT_PATHS)
+
+
+def load_withdraw_cert_font(
+    family: str,
+    size: int,
+) -> Union[ImageFont.FreeTypeFont, ImageFont.ImageFont]:
+    return _load_font(size, WITHDRAW_CERT_FONT_PATHS[family])
 
 
 def format_datetime_now() -> str:
@@ -265,6 +299,150 @@ def make_qr_image(link: str, size: int) -> Image.Image:
     qr.make(fit=True)
     qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
     return qr_img.resize((size, size), Image.Resampling.LANCZOS)
+
+
+def _is_withdraw_cert_qr_card_pixel(red: int, green: int, blue: int) -> bool:
+    return blue > 235 and green > 225 and 200 <= red <= 250
+
+
+def _withdraw_cert_card_visual_bounds(
+    pixels: Any,
+    min_x: int,
+    min_y: int,
+    max_x: int,
+    max_y: int,
+) -> tuple[int, int, int, int]:
+    left_edges: list[int] = []
+    right_edges: list[int] = []
+    scan_top = min_y + int((max_y - min_y) * 0.08)
+    scan_bottom = max_y - int((max_y - min_y) * 0.28)
+
+    for y in range(scan_top, scan_bottom, 5):
+        xs = [
+            x
+            for x in range(min_x, max_x + 1)
+            if _is_withdraw_cert_qr_card_pixel(*pixels[x, y][:3])
+        ]
+        if len(xs) < max(50, (max_x - min_x) // 3):
+            continue
+
+        runs: list[tuple[int, int]] = []
+        start = xs[0]
+        prev = xs[0]
+        for x in xs[1:]:
+            if x > prev + 1:
+                runs.append((start, prev))
+                start = x
+            prev = x
+        runs.append((start, prev))
+        if not runs:
+            continue
+
+        left, right = max(runs, key=lambda run: run[1] - run[0])
+        if right - left < (max_x - min_x) * 0.4:
+            continue
+        left_edges.append(left)
+        right_edges.append(right)
+
+    if left_edges and right_edges:
+        left_edges.sort()
+        right_edges.sort()
+        median_left = left_edges[len(left_edges) // 2]
+        median_right = right_edges[len(right_edges) // 2]
+        return median_left, min_y, median_right, max_y
+
+    return min_x, min_y, max_x, max_y
+
+
+def _find_withdraw_cert_qr_slots(image: Image.Image) -> list[tuple[int, int, int]]:
+    """Detect the two footer placeholder cards and return center/size for each QR."""
+    width, height = image.size
+    pixels = image.convert("RGBA").load()
+    y_start = int(height * 0.78)
+    y_end = int(height * 0.93)
+    visited: set[tuple[int, int]] = set()
+    components: list[tuple[int, int, int, int]] = []
+
+    for y in range(y_start, y_end):
+        for x in range(width):
+            if (x, y) in visited:
+                continue
+            red, green, blue, _alpha = pixels[x, y]
+            if not _is_withdraw_cert_qr_card_pixel(red, green, blue):
+                continue
+
+            stack = [(x, y)]
+            min_x = max_x = x
+            min_y = max_y = y
+            visited.add((x, y))
+
+            while stack:
+                cx, cy = stack.pop()
+                min_x = min(min_x, cx)
+                max_x = max(max_x, cx)
+                min_y = min(min_y, cy)
+                max_y = max(max_y, cy)
+                for nx, ny in ((cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)):
+                    if nx < 0 or ny < y_start or nx >= width or ny >= y_end:
+                        continue
+                    if (nx, ny) in visited:
+                        continue
+                    pr, pg, pb, _ = pixels[nx, ny]
+                    if _is_withdraw_cert_qr_card_pixel(pr, pg, pb):
+                        visited.add((nx, ny))
+                        stack.append((nx, ny))
+
+            box_w = max_x - min_x + 1
+            box_h = max_y - min_y + 1
+            if box_w > 250 and box_h > 250 and 0.65 <= box_w / box_h <= 1.35:
+                components.append((min_x, min_y, max_x, max_y))
+
+    components.sort(key=lambda box: box[0])
+    deduped: list[tuple[int, int, int, int]] = []
+    for box in components:
+        if deduped and box[0] - deduped[-1][0] < 80:
+            prev = deduped[-1]
+            prev_area = (prev[2] - prev[0]) * (prev[3] - prev[1])
+            box_area = (box[2] - box[0]) * (box[3] - box[1])
+            if box_area > prev_area:
+                deduped[-1] = box
+            continue
+        deduped.append(box)
+
+    if len(deduped) < 2:
+        raise ValueError("Could not detect withdraw certificate QR placeholder boxes")
+
+    slots: list[tuple[int, int, int]] = []
+    for min_x, min_y, max_x, max_y in deduped[:2]:
+        vis_min_x, vis_min_y, vis_max_x, vis_max_y = _withdraw_cert_card_visual_bounds(
+            pixels,
+            min_x,
+            min_y,
+            max_x,
+            max_y,
+        )
+        box_w = vis_max_x - vis_min_x + 1
+        box_h = vis_max_y - vis_min_y + 1
+        center_x = (vis_min_x + vis_max_x) // 2
+        label_height = int(box_h * 0.24)
+        qr_top = vis_min_y + int(box_h * 0.08)
+        qr_bottom = vis_max_y - label_height
+        center_y = (qr_top + qr_bottom) // 2
+        qr_size = int(min(box_w * 0.78, (qr_bottom - qr_top) * 0.92))
+        slots.append((center_x, center_y, max(1, qr_size)))
+
+    return slots
+
+
+@lru_cache(maxsize=4)
+def _withdraw_cert_qr_slots(
+    template_path: str,
+    width: int,
+    height: int,
+) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    with Image.open(template_path) as template:
+        slots = _find_withdraw_cert_qr_slots(template)
+    return (slots[0], slots[1])
 
 
 def _build_trader_report_image(
@@ -330,6 +508,220 @@ def build_pass_image(
         total_profit,
         bottom_fill=PASS_FILL,
     )
+
+
+def _withdraw_cert_design_font_size(design_px: float, image_height: int) -> int:
+    return max(1, int(round(design_px * image_height / WITHDRAW_CERT_DESIGN_HEIGHT)))
+
+
+def _withdraw_cert_scale_x(design_value: float, image_width: int) -> float:
+    return design_value * image_width / WITHDRAW_CERT_DESIGN_WIDTH
+
+
+def _withdraw_cert_scale_y(design_value: float, image_height: int) -> float:
+    return design_value * image_height / WITHDRAW_CERT_DESIGN_HEIGHT
+
+
+def _withdraw_cert_text_bbox(
+    text: str,
+    font: Union[ImageFont.FreeTypeFont, ImageFont.ImageFont],
+) -> tuple[int, int, int, int]:
+    probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    return probe.textbbox((0, 0), text, font=font)
+
+
+def _fit_withdraw_cert_username_font(
+    username: str,
+    image_width: int,
+    image_height: int,
+    box_width: float,
+    box_height: float,
+) -> Union[ImageFont.FreeTypeFont, ImageFont.ImageFont]:
+    size = _withdraw_cert_design_font_size(WITHDRAW_CERT_USERNAME_FONT_SIZE, image_height)
+    min_size = _withdraw_cert_design_font_size(60, image_height)
+    while size >= min_size:
+        font = load_withdraw_cert_font("arizonia", size)
+        bbox = _withdraw_cert_text_bbox(username, font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        if text_width <= box_width and text_height <= box_height:
+            return font
+        size -= 1
+    return load_withdraw_cert_font("arizonia", min_size)
+
+
+def _draw_withdraw_cert_username(
+    draw: ImageDraw.ImageDraw,
+    username: str,
+    image_width: int,
+    image_height: int,
+) -> None:
+    box_left, box_top, box_width, box_height = WITHDRAW_CERT_USERNAME_BOX
+    left = _withdraw_cert_scale_x(box_left, image_width)
+    top = _withdraw_cert_scale_y(box_top, image_height)
+    width = _withdraw_cert_scale_x(box_width, image_width)
+    height = _withdraw_cert_scale_y(box_height, image_height)
+    font = _fit_withdraw_cert_username_font(username, image_width, image_height, width, height)
+    center_x = left + width / 2
+    center_y = top + height / 2
+    draw.text(
+        (center_x, center_y),
+        username,
+        font=font,
+        fill=WITHDRAW_CERT_USERNAME_FILL,
+        anchor="mm",
+    )
+
+
+def _withdraw_cert_ordinal(day: int) -> str:
+    if 11 <= (day % 100) <= 13:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+    return f"{day}{suffix}"
+
+
+def format_withdraw_cert_date(value: str) -> str:
+    raw = value.strip()
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%m/%d/%Y"):
+        try:
+            parsed = datetime.strptime(raw, fmt)
+            month = parsed.strftime("%b")
+            return f"{_withdraw_cert_ordinal(parsed.day)},{month} {parsed.year}"
+        except ValueError:
+            continue
+    return raw
+
+
+def _draw_withdraw_cert_meta_block(
+    draw: ImageDraw.ImageDraw,
+    x: float,
+    y: float,
+    label: str,
+    value: str,
+    font: Union[ImageFont.FreeTypeFont, ImageFont.ImageFont],
+    *,
+    anchor: str,
+    fill: tuple[int, int, int, int] = WITHDRAW_CERT_META_FILL,
+) -> None:
+    draw.text((x, y), label, font=font, fill=fill, anchor=anchor)
+    label_bbox = draw.textbbox((x, y), label, font=font, anchor=anchor)
+    gap = _withdraw_cert_scale_y(WITHDRAW_CERT_META_LINE_GAP, draw.im.size[1])
+    value_y = label_bbox[3] + gap
+    draw.text((x, value_y), value, font=font, fill=fill, anchor=anchor)
+
+
+def _withdraw_cert_point(
+    width: int,
+    height: int,
+    *,
+    left: Optional[float] = None,
+    right: Optional[float] = None,
+    top: Optional[float] = None,
+    bottom: Optional[float] = None,
+) -> tuple[float, float]:
+    x_scale = width / WITHDRAW_CERT_DESIGN_WIDTH
+    y_scale = height / WITHDRAW_CERT_DESIGN_HEIGHT
+    if right is not None:
+        x = width - right * x_scale
+    elif left is not None:
+        x = left * x_scale
+    else:
+        x = 0.0
+    if bottom is not None:
+        y = height - bottom * y_scale
+    elif top is not None:
+        y = top * y_scale
+    else:
+        y = 0.0
+    return x, y
+
+
+def build_withdraw_cert_image(
+    *,
+    cert_id: str,
+    date: str,
+    username: str,
+    total_amount: str,
+    profit_share: str,
+    profit_withdraw: str,
+    tx_link: str,
+    analyze_link: str,
+) -> bytes:
+    image = Image.open(WITHDRAW_IMAGE).convert("RGBA")
+    draw = ImageDraw.Draw(image)
+    width, height = image.size
+
+    meta_font = load_withdraw_cert_font(
+        "be_vietnam",
+        _withdraw_cert_design_font_size(WITHDRAW_CERT_META_FONT_SIZE, height),
+    )
+    total_font = load_withdraw_cert_font("baskervville", WITHDRAW_CERT_FONT_SIZES["total_amount"])
+    profit_font = load_withdraw_cert_font("baskervville", WITHDRAW_CERT_FONT_SIZES["profit"])
+
+    cert_x, cert_y = _withdraw_cert_point(width, height, left=227.5, top=227.5)
+    date_x, date_y = _withdraw_cert_point(width, height, right=315, top=227.5)
+    _, total_y = _withdraw_cert_point(width, height, top=1419)
+    profit_share_x, profit_y = _withdraw_cert_point(width, height, left=497.75, top=1471)
+    profit_withdraw_x, _ = _withdraw_cert_point(width, height, left=610.25, top=1471)
+
+    tx_slot, analyze_slot = _withdraw_cert_qr_slots(str(WITHDRAW_IMAGE), width, height)
+
+    _draw_withdraw_cert_meta_block(
+        draw,
+        cert_x,
+        cert_y,
+        "Certificate ID:",
+        cert_id,
+        meta_font,
+        anchor="lt",
+    )
+    _draw_withdraw_cert_meta_block(
+        draw,
+        date_x,
+        date_y,
+        "Date:",
+        format_withdraw_cert_date(date),
+        meta_font,
+        anchor="rt",
+    )
+    _draw_withdraw_cert_username(draw, username, width, height)
+    draw.text(
+        (width / 2, total_y),
+        total_amount,
+        font=total_font,
+        fill=TEXT_FILL,
+        anchor="mt",
+    )
+    draw.text(
+        (profit_share_x, profit_y),
+        profit_share,
+        font=profit_font,
+        fill=TEXT_FILL,
+        anchor="lt",
+    )
+    draw.text(
+        (profit_withdraw_x, profit_y),
+        profit_withdraw,
+        font=profit_font,
+        fill=TEXT_FILL,
+        anchor="lt",
+    )
+
+    tx_cx, tx_cy, tx_qr_size = tx_slot
+    analyze_cx, analyze_cy, analyze_qr_size = analyze_slot
+    tx_qr = make_qr_image(tx_link, tx_qr_size)
+    analyze_qr = make_qr_image(analyze_link, analyze_qr_size)
+    image.paste(tx_qr, (int(tx_cx - tx_qr_size / 2), int(tx_cy - tx_qr_size / 2)))
+    image.paste(
+        analyze_qr,
+        (int(analyze_cx - analyze_qr_size / 2), int(analyze_cy - analyze_qr_size / 2)),
+    )
+
+    buffer = BytesIO()
+    image.convert("RGB").save(buffer, format="JPEG", quality=95)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 def fetch_treasury_info() -> dict:
@@ -578,10 +970,14 @@ def _normalize_pass_item(item: dict[str, Any]) -> dict[str, Any]:
 
 def _normalize_withdraw_item(item: dict[str, Any]) -> dict[str, Any]:
     return {
+        "cert_id": item.get("cert_id") if item.get("cert_id") is not None else item.get("certId"),
+        "date": item.get("date"),
         "username": item.get("username"),
-        "login": item.get("login"),
-        "withdraw_amount": item.get("withdraw_amount") if item.get("withdraw_amount") is not None else item.get("withdrawAmount"),
-        "total_withdraw": item.get("total_withdraw") if item.get("total_withdraw") is not None else item.get("totalWithdraw"),
+        "total_amount": item.get("total_amount") if item.get("total_amount") is not None else item.get("totalAmount"),
+        "profit_share": item.get("profit_share") if item.get("profit_share") is not None else item.get("profitShare"),
+        "profit_withdraw": item.get("profit_withdraw") if item.get("profit_withdraw") is not None else item.get("profitWithdraw"),
+        "tx_link": item.get("tx_link") if item.get("tx_link") is not None else item.get("txLink"),
+        "analyze_link": item.get("analyze_link") if item.get("analyze_link") is not None else item.get("analyzeLink"),
     }
 
 
@@ -738,15 +1134,20 @@ async def send_withdraw_reports_batch(items: list[dict[str, Any]]) -> list[dict[
             continue
 
         try:
-            login = str(normalized["login"])
-            image_bytes = build_pass_image(
-                WITHDRAW_IMAGE,
+            image_bytes = build_withdraw_cert_image(
+                cert_id=str(normalized["cert_id"]),
+                date=str(normalized["date"]),
                 username=str(normalized["username"]),
-                login=login,
-                initial_balance=_format_report_value(normalized["withdraw_amount"]),
-                total_profit=_format_report_value(normalized["total_withdraw"]),
+                total_amount=_format_report_value(normalized["total_amount"]),
+                profit_share=_format_report_value(normalized["profit_share"]),
+                profit_withdraw=_format_report_value(normalized["profit_withdraw"]),
+                tx_link=str(normalized["tx_link"]),
+                analyze_link=str(normalized["analyze_link"]),
             )
-            caption = build_withdraw_telegram_caption(login)
+            caption = build_withdraw_telegram_caption(
+                str(normalized["username"]),
+                str(normalized["analyze_link"]),
+            )
             url = _upload_report_image(image_bytes, "withdraw")
             await send_image_to_chats(image_bytes, caption=caption, bot=bot)
             results.append(
@@ -754,7 +1155,7 @@ async def send_withdraw_reports_batch(items: list[dict[str, Any]]) -> list[dict[
                     "index": index,
                     "ok": True,
                     "username": str(normalized["username"]),
-                    "login": login,
+                    "cert_id": str(normalized["cert_id"]),
                     "caption": caption,
                     "url": url,
                 }
@@ -924,14 +1325,18 @@ def save_phase2_report_preview(payload: dict[str, Any]) -> dict[str, str]:
 
 def save_withdraw_report_preview(payload: dict[str, Any]) -> dict[str, str]:
     """
-    Build the withdraw report image from a JSON-like dict and save it locally.
+    Build the withdraw certificate image from a JSON-like dict and save it locally.
 
     Example payload:
         {
+            "cert_id": "EPF-2026-0042",
+            "date": "2026-07-02",
             "username": "pips_shark",
-            "login": "12387427863",
-            "withdraw_amount": 5000,
-            "total_withdraw": 15000
+            "total_amount": 15000,
+            "profit_share": "80%",
+            "profit_withdraw": 5000,
+            "tx_link": "https://etherscan.io/tx/0xabc...",
+            "analyze_link": "https://epfund.org/en/wallet?tab=traders&trader=123"
         }
 
     Saves to database/withdraw-<random_id>.jpg and returns metadata.
@@ -941,13 +1346,15 @@ def save_withdraw_report_preview(payload: dict[str, Any]) -> dict[str, str]:
     if missing:
         raise ValueError(f"Missing fields: {', '.join(missing)}")
 
-    login = str(normalized["login"])
-    image_bytes = build_pass_image(
-        WITHDRAW_IMAGE,
+    image_bytes = build_withdraw_cert_image(
+        cert_id=str(normalized["cert_id"]),
+        date=str(normalized["date"]),
         username=str(normalized["username"]),
-        login=login,
-        initial_balance=_format_report_value(normalized["withdraw_amount"]),
-        total_profit=_format_report_value(normalized["total_withdraw"]),
+        total_amount=_format_report_value(normalized["total_amount"]),
+        profit_share=_format_report_value(normalized["profit_share"]),
+        profit_withdraw=_format_report_value(normalized["profit_withdraw"]),
+        tx_link=str(normalized["tx_link"]),
+        analyze_link=str(normalized["analyze_link"]),
     )
 
     DATABASE_DIR.mkdir(parents=True, exist_ok=True)
@@ -1141,37 +1548,14 @@ def health():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "preview":
         sample = {
+            "cert_id": "1234567890",
+            "date": "2026-07-02",
             "username": "pips_shark",
-            "login": "12387427863",
-            "reason": "failed by last week trading",
-            "final_equity": "378433",
-        }
-        result = save_failed_report_preview(sample)
-        print(result["path"])
-
-        sample = {
-            "username": "pips_shark",
-            "login": "12387427863",
-            "initial_balance": "100000",
-            "total_profit": "12500",
-        }
-        result = save_phase1_report_preview(sample)
-        print(result["path"])
-
-        sample = {
-            "username": "pips_shark",
-            "login": "12387427863",
-            "initial_balance": "100000",
-            "total_profit": "12500",
-        }
-        result = save_phase2_report_preview(sample)
-        print(result["path"])
-
-        sample = {
-            "username": "pips_shark",
-            "login": "12387427863",
-            "withdraw_amount": 5000,
-            "total_withdraw": 15000,
+            "total_amount": 15000,
+            "profit_share": "80%",
+            "profit_withdraw": 5000,
+            "tx_link": "https://etherscan.io/tx/0xabc123",
+            "analyze_link": "https://epfund.org/en/wallet?tab=traders&trader=12387427863",
         }
         result = save_withdraw_report_preview(sample)
         print(result["path"])
